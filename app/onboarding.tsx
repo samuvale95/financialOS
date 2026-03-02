@@ -26,7 +26,7 @@ import { saveOnboardingData } from '../utils/storage';
 import { calculateBudgets, getSavingsPotential } from '../utils/budgetCalculator';
 import {
   searchCoinGecko, fetchCoinGeckoAsset,
-  searchYahoo, fetchYahooAsset, lookupTickerDirect, nextAssetColor,
+  searchTiingo, lookupTickerDirect, nextAssetColor,
 } from '../utils/financialApi';
 import type { SearchResult } from '../utils/financialApi';
 import { searchLocalAssets, looksLikeTicker } from '../constants/popularAssets';
@@ -374,7 +374,7 @@ function AssetSearch({ assetType, onAdd }: {
       if (text.trim().length > 1) {
         debRef.current = setTimeout(async () => {
           setYahooSearching(true);
-          const res = await searchYahoo(text);
+          const res = await searchTiingo(text);
           // Only show Yahoo results not already in local list
           const localTickers = new Set(searchLocalAssets(text).map(a => a.ticker));
           setYahooResults(res.filter(r => !localTickers.has(r.ticker)));
@@ -405,7 +405,7 @@ function AssetSearch({ assetType, onAdd }: {
       setUiState({ mode: 'qty', result: {
         id: fetched.ticker, name: fetched.name, ticker: fetched.ticker,
         type: fetched.type === 'etf' ? 'etf' : fetched.type === 'bond' ? 'bond' : 'stock',
-        source: 'yahoo',
+        source: 'tiingo',
       }});
     } else {
       Alert.alert(
@@ -578,7 +578,7 @@ function AssetSearch({ assetType, onAdd }: {
               <Text style={s.metaText}>
                 {r.type.toUpperCase()}
                 {'exchange' in r && r.exchange ? ` · ${r.exchange}` : ''}
-                {'source' in r && r.source === 'yahoo' ? ' · Yahoo' : ''}
+                {'source' in r && r.source === 'tiingo' ? ' · Tiingo' : ''}
               </Text>
             </View>
           </TouchableOpacity>

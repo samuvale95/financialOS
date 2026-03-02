@@ -6,7 +6,7 @@ export interface SearchResult {
   ticker: string;
   type: 'stock' | 'etf' | 'crypto' | 'bond';
   exchange?: string;
-  source: 'yahoo' | 'coingecko' | 'local';
+  source: 'tiingo' | 'coingecko' | 'local';
 }
 
 export interface FetchedAsset {
@@ -22,6 +22,23 @@ const ASSET_COLORS = ['#6C63FF', '#4FC3F7', '#FF9500', '#FF6B6B', '#00D68F', '#B
 let _colorIndex = 0;
 export function nextAssetColor(): string {
   return ASSET_COLORS[(_colorIndex++) % ASSET_COLORS.length];
+}
+
+// ── Tiingo Configuration ──────────────────────────────────────────────────────
+// Registrazione gratuita: https://www.tiingo.com → Dashboard → API
+// Free tier: ~500 req/ora, dati EOD per azioni/ETF globali
+
+export const TIINGO_API_KEY = 'YOUR_KEY_HERE'; // ← inserisci il tuo token Tiingo
+
+function hasKey(): boolean {
+  return TIINGO_API_KEY.length > 10 && TIINGO_API_KEY !== 'YOUR_KEY_HERE';
+}
+
+function tiingoHeaders(): Record<string, string> {
+  return {
+    Authorization: `Token ${TIINGO_API_KEY}`,
+    'Content-Type': 'application/json',
+  };
 }
 
 // ── Fetch with timeout ────────────────────────────────────────────────────────
@@ -40,236 +57,111 @@ async function fetchWithTimeout(
   }
 }
 
-const UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148';
-
-// ── Yahoo Finance crumb session ───────────────────────────────────────────────
-// How it works:
-//   React Native's native HTTP client (URLSession on iOS, OkHttp on Android)
-//   maintains a per-app cookie store. Cookies set by yahoo.com are automatically
-//   sent to query1/query2.finance.yahoo.com requests (same domain family).
-//
-//   We initialize the session once, then reuse the crumb for up to 25 minutes.
-
-let _crumb: string | null = null;
-let _crumbAt = 0;
-const CRUMB_TTL = 25 * 60 * 1000;
-
-async function getYahooCrumb(): Promise<string | null> {
-  if (_crumb && Date.now() - _crumbAt < CRUMB_TTL) return _crumb;
-
-  // Attempt 1: consent endpoint sets Yahoo cookies → then /v1/test/getcrumb works
-  try {
-    await fetchWithTimeout('https://fc.yahoo.com', {
-      headers: { 'User-Agent': UA, 'Accept': '*/*' },
-    }, 5000);
-
-    const r = await fetchWithTimeout(
-      'https://query1.finance.yahoo.com/v1/test/getcrumb',
-      { headers: { 'User-Agent': UA, 'Accept': '*/*' } },
-      5000
-    );
-    if (r.ok) {
-      const t = (await r.text()).trim();
-      if (t && t.length > 2 && t.length < 60 && !t.includes('<') && t !== 'Unauthorized') {
-        _crumb = t;
-        _crumbAt = Date.now();
-        return _crumb;
-      }
-    }
-  } catch {}
-
-  // Attempt 2: extract crumb from Yahoo Finance page HTML
-  // The crumb is embedded as "crumb":"XXXXXXXXXX" in the page's JSON data
-  try {
-    const r2 = await fetchWithTimeout('https://finance.yahoo.com/', {
-      headers: { 'User-Agent': UA, 'Accept': 'text/html,application/xhtml+xml,*/*' },
-    }, 8000);
-    if (r2.ok) {
-      const html = await r2.text();
-      // Yahoo embeds the crumb in multiple places; try all patterns
-      const patterns = [
-        /"crumb":"([^"\\]{8,20})"/,
-        /\"CrumbStore\":\{\"crumb\":\"([^"\\]+)\"\}/,
-        /crumb=([A-Za-z0-9._/-]{8,20})/,
-      ];
-      for (const pat of patterns) {
-        const m = html.match(pat);
-        if (m?.[1] && !m[1].includes('\\u')) {
-          _crumb = m[1];
-          _crumbAt = Date.now();
-          return _crumb;
-        }
-      }
-      // Try escaped unicode crumb (Yahoo sometimes uses \\u002F for /)
-      const mEsc = html.match(/"crumb":"([^"]+)"/);
-      if (mEsc?.[1]) {
-        try {
-          const decoded = JSON.parse(`"${mEsc[1]}"`);
-          if (decoded && decoded.length > 2 && decoded.length < 60) {
-            _crumb = decoded;
-            _crumbAt = Date.now();
-            return _crumb;
-          }
-        } catch {}
-      }
-    }
-  } catch {}
-
-  // Attempt 3: getcrumb without fc.yahoo.com initialization
-  // (works on some network configs where cookies persist from a previous session)
-  try {
-    const r3 = await fetchWithTimeout(
-      'https://query2.finance.yahoo.com/v1/test/getcrumb',
-      { headers: { 'User-Agent': UA, 'Accept': '*/*' } },
-      5000
-    );
-    if (r3.ok) {
-      const t = (await r3.text()).trim();
-      if (t && t.length > 2 && t.length < 60 && !t.includes('<') && t !== 'Unauthorized') {
-        _crumb = t;
-        _crumbAt = Date.now();
-        return _crumb;
-      }
-    }
-  } catch {}
-
-  return null;
+function isoDateDaysAgo(days: number): string {
+  return new Date(Date.now() - days * 24 * 60 * 60 * 1000)
+    .toISOString()
+    .split('T')[0];
 }
 
-/** Proactively initialize Yahoo session. Call this when entering the asset search screen. */
-export async function warmupYahooSession(): Promise<void> {
-  await getYahooCrumb();
+function tiingoAssetType(raw: string): SearchResult['type'] {
+  const s = (raw ?? '').toLowerCase();
+  if (s === 'etf') return 'etf';
+  if (s === 'bond' || s === 'fixed income') return 'bond';
+  if (s === 'mutual fund') return 'etf';
+  return 'stock';
 }
 
-/** Invalidate cached crumb (call if getting 401/403 errors) */
-export function invalidateYahooCrumb(): void {
-  _crumb = null;
-  _crumbAt = 0;
-}
+// ── Tiingo Search ─────────────────────────────────────────────────────────────
+// Endpoint: GET /tiingo/utilities/search?query={q}&limit=10
+// Ritorna un array di { ticker, name, assetType, countryCode, ... }
+// Copre azioni USA + molti mercati internazionali (incluse borse europee)
 
-// ── Yahoo Finance Search ──────────────────────────────────────────────────────
-
-export async function searchYahoo(query: string): Promise<SearchResult[]> {
-  if (!query.trim()) return [];
-
-  const crumb = await getYahooCrumb();
-  const crumbParam = crumb ? `&crumb=${encodeURIComponent(crumb)}` : '';
-
+export async function searchTiingo(query: string): Promise<SearchResult[]> {
+  if (!query.trim() || !hasKey()) return [];
   try {
-    const url = `https://query2.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(query)}&quotesCount=10&newsCount=0&enableFuzzyQuery=false${crumbParam}`;
-    const res = await fetchWithTimeout(url, {
-      headers: { 'User-Agent': UA, 'Accept': 'application/json', 'Accept-Language': 'en-US,en;q=0.9' },
-    }, 8000);
-
-    if (res.status === 401 || res.status === 403) {
-      // Crumb invalid → reset and retry once
-      invalidateYahooCrumb();
-      const crumb2 = await getYahooCrumb();
-      if (crumb2) {
-        const url2 = `https://query2.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(query)}&quotesCount=10&newsCount=0&crumb=${encodeURIComponent(crumb2)}`;
-        const res2 = await fetchWithTimeout(url2, {
-          headers: { 'User-Agent': UA, 'Accept': 'application/json' },
-        }, 8000);
-        if (res2.ok) return parseYahooSearchResponse(await res2.json());
-      }
-      return [];
-    }
-
+    const url = `https://api.tiingo.com/tiingo/utilities/search?query=${encodeURIComponent(query)}&limit=10`;
+    const res = await fetchWithTimeout(url, { headers: tiingoHeaders() }, 8000);
     if (!res.ok) return [];
-    return parseYahooSearchResponse(await res.json());
+    const json = (await res.json()) as Record<string, unknown>[];
+    return json
+      .filter(item => item.ticker)
+      .map(item => ({
+        id: (item.ticker as string).toUpperCase(),
+        name: (item.name as string) ?? (item.ticker as string),
+        ticker: (item.ticker as string).toUpperCase(),
+        type: tiingoAssetType((item.assetType as string) ?? ''),
+        exchange: (item.countryCode as string | undefined),
+        source: 'tiingo' as const,
+      }));
   } catch {
     return [];
   }
 }
 
-function parseYahooSearchResponse(json: unknown): SearchResult[] {
-  const data = json as Record<string, unknown>;
-  // Handle both flat ({quotes:[...]}) and nested ({finance:{result:[{quotes:[...]}]}}) formats
-  const quotes: Record<string, unknown>[] =
-    (data?.quotes as Record<string, unknown>[]) ??
-    ((data?.finance as Record<string, unknown>)?.result as Record<string, unknown>[])?.[0]?.quotes as Record<string, unknown>[] ??
-    [];
+// ── Tiingo Asset Fetch ────────────────────────────────────────────────────────
+// Cerca nome+tipo via utilities/search, poi scarica i prezzi giornalieri
+// per costruire sparkline (ultimi 7 trading day) e prezzo corrente
 
-  return quotes
-    .filter((q) => q.symbol)
-    .map((q) => {
-      const qt = ((q.quoteType as string) ?? '').toUpperCase();
-      let type: SearchResult['type'] = 'stock';
-      if (qt === 'ETF' || qt === 'MUTUALFUND') type = 'etf';
-      else if (qt === 'BOND' || qt === 'FUTURE') type = 'bond';
-      return {
-        id: q.symbol as string,
-        name: ((q.longname ?? q.shortname ?? q.symbol) as string),
-        ticker: q.symbol as string,
-        type,
-        exchange: q.exchDisp as string | undefined,
-        source: 'yahoo' as const,
-      };
-    });
-}
+export async function fetchTiingoAsset(symbol: string): Promise<FetchedAsset> {
+  if (!hasKey()) throw new Error('Tiingo API key non configurato');
 
-// ── Yahoo Finance Asset Fetch ─────────────────────────────────────────────────
+  const ticker = symbol.toLowerCase();
+  const startDate = isoDateDaysAgo(14); // 14 giorni per coprire weekend/festivi
 
-export async function fetchYahooAsset(symbol: string): Promise<FetchedAsset> {
-  const crumb = await getYahooCrumb();
-  const crumbParam = crumb ? `&crumb=${encodeURIComponent(crumb)}` : '';
+  // Meta (nome + tipo) e prezzi in parallelo
+  const [searchRes, pricesRes] = await Promise.all([
+    fetchWithTimeout(
+      `https://api.tiingo.com/tiingo/utilities/search?query=${encodeURIComponent(symbol)}&limit=5`,
+      { headers: tiingoHeaders() },
+      6000
+    ).catch(() => null),
+    fetchWithTimeout(
+      `https://api.tiingo.com/tiingo/daily/${encodeURIComponent(ticker)}/prices?startDate=${startDate}`,
+      { headers: tiingoHeaders() },
+      10000
+    ),
+  ]);
 
-  // Try v8/chart (sparkline + price)
-  try {
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=7d${crumbParam}`;
-    const res = await fetchWithTimeout(url, { headers: { 'User-Agent': UA, 'Accept': 'application/json' } }, 10000);
-    if (res.ok) {
-      const json = await res.json();
-      const chart = (json as Record<string, unknown>)?.chart as Record<string, unknown>;
-      const result = (chart?.result as Record<string, unknown>[])?.[0];
-      if (result) {
-        const meta = result.meta as Record<string, unknown> ?? {};
-        const currentPrice = (meta.regularMarketPrice ?? meta.chartPreviousClose ?? 0) as number;
-        const closes = ((result.indicators as Record<string, unknown>)?.quote as Record<string, unknown>[])?.[0]?.close as (number | null)[] ?? [];
-        const sparkline = closes.filter((v): v is number => typeof v === 'number' && !isNaN(v)).slice(-7);
-        const qt = ((meta.instrumentType ?? '') as string).toUpperCase();
-        let type: Asset['type'] = 'stock';
-        if (qt === 'ETF' || qt === 'MUTUALFUND') type = 'etf';
-        else if (qt === 'BOND') type = 'bond';
-        return {
-          name: (meta.longName ?? meta.shortName ?? symbol) as string,
-          ticker: symbol,
-          type,
-          currentPrice,
-          sparkline,
-        };
-      }
+  if (!pricesRes.ok) {
+    throw new Error(`Tiingo ${pricesRes.status} per ${symbol}`);
+  }
+
+  // Estrai nome e tipo dal risultato di ricerca più preciso
+  let name = symbol.toUpperCase();
+  let type: Asset['type'] = 'stock';
+  if (searchRes?.ok) {
+    const results = (await searchRes.json()) as Record<string, unknown>[];
+    const exact = results.find(
+      r => ((r.ticker as string) ?? '').toLowerCase() === ticker
+    ) ?? results[0];
+    if (exact) {
+      name = (exact.name as string) ?? name;
+      type = tiingoAssetType((exact.assetType as string) ?? '');
     }
-  } catch {}
+  }
 
-  // Fallback: v7/quote (price only, no sparkline)
-  const url2 = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(symbol)}${crumbParam}`;
-  const res2 = await fetchWithTimeout(url2, { headers: { 'User-Agent': UA, 'Accept': 'application/json' } }, 10000);
-  if (!res2.ok) throw new Error(`Yahoo ${res2.status} for ${symbol}`);
-  const json2 = await res2.json();
-  const q = ((json2 as Record<string, unknown>)?.quoteResponse as Record<string, unknown>)?.result as Record<string, unknown>[];
-  const quote = q?.[0];
-  if (!quote) throw new Error(`No data for ${symbol}`);
-  const qt2 = ((quote.quoteType ?? '') as string).toUpperCase();
-  let type2: Asset['type'] = 'stock';
-  if (qt2 === 'ETF' || qt2 === 'MUTUALFUND') type2 = 'etf';
-  else if (qt2 === 'BOND') type2 = 'bond';
-  return {
-    name: (quote.longName ?? quote.shortName ?? symbol) as string,
-    ticker: symbol,
-    type: type2,
-    currentPrice: (quote.regularMarketPrice ?? 0) as number,
-    sparkline: [],
-  };
+  // Sparkline: ultimi 7 prezzi di chiusura adjusted
+  const prices = (await pricesRes.json()) as Record<string, unknown>[];
+  const sparkline = prices
+    .map(p => (p.adjClose ?? p.close) as number)
+    .filter((v): v is number => typeof v === 'number' && !isNaN(v))
+    .slice(-7);
+
+  const currentPrice = sparkline.length > 0 ? sparkline[sparkline.length - 1] : 0;
+
+  return { name, ticker: symbol.toUpperCase(), type, currentPrice, sparkline };
 }
 
 export async function lookupTickerDirect(ticker: string): Promise<FetchedAsset | null> {
   try {
-    return await fetchYahooAsset(ticker);
+    return await fetchTiingoAsset(ticker);
   } catch {
     return null;
   }
 }
+
+/** No-op — Tiingo non richiede sessione/crumb. Mantenuto per compatibilità. */
+export async function warmupYahooSession(): Promise<void> {}
 
 // ── CoinGecko ─────────────────────────────────────────────────────────────────
 
