@@ -15,6 +15,7 @@ import {
   loadAssets, saveAssets,
   loadGoals, saveGoals,
   loadAccounts, saveAccounts,
+  clearAllData,
 } from '../utils/storage';
 
 const DEFAULT_BUDGET_LIMITS: StoredBudget[] = [
@@ -121,6 +122,7 @@ interface AppData {
   addAccount: (a: Omit<BankAccount, 'id'>) => void;
   updateAccount: (id: string, updates: Partial<BankAccount>) => void;
   deleteAccount: (id: string) => void;
+  resetAll: () => Promise<void>;
 }
 
 const DataContext = createContext<AppData | null>(null);
@@ -278,6 +280,15 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     });
   }, []);
 
+  const resetAll = useCallback(async () => {
+    await clearAllData();
+    setTransactions([]);
+    setStoredBudgets([]);
+    setAssets([]);
+    setGoals([]);
+    setAccounts([]);
+  }, []);
+
   return (
     <DataContext.Provider
       value={{
@@ -299,6 +310,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
         addAccount,
         updateAccount,
         deleteAccount,
+        resetAll,
       }}
     >
       {children}

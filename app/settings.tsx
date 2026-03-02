@@ -7,6 +7,7 @@ import {
   Switch,
   TouchableOpacity,
   TextInput,
+  Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -265,7 +266,7 @@ function AccountRow({ account, onUpdate, onDelete }: AccountRowProps) {
 
 export default function SettingsScreen() {
   const { settings, updateSetting } = useSettings();
-  const { accounts, addAccount, updateAccount, deleteAccount } = useData();
+  const { accounts, addAccount, updateAccount, deleteAccount, resetAll } = useData();
   const [showAddAccount, setShowAddAccount] = useState(false);
 
   return (
@@ -402,6 +403,41 @@ export default function SettingsScreen() {
             onToggle={(v) => updateSetting('preferences', 'haptics', v)}
           />
         </Section>
+
+        {/* Developer */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>DEVELOPER</Text>
+          <View style={styles.card}>
+            <TouchableOpacity
+              style={styles.resetRow}
+              onPress={() =>
+                Alert.alert(
+                  'Reset completo',
+                  'Verranno cancellati tutti i dati: transazioni, budget, investimenti, conti e configurazione onboarding. L\'app ripartirà dal primo accesso.',
+                  [
+                    { text: 'Annulla', style: 'cancel' },
+                    {
+                      text: 'Cancella tutto',
+                      style: 'destructive',
+                      onPress: async () => {
+                        await resetAll();
+                        router.replace('/onboarding');
+                      },
+                    },
+                  ]
+                )
+              }
+              activeOpacity={0.7}
+            >
+              <Ionicons name="trash-outline" size={20} color={Colors.semantic.danger} />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.resetLabel}>Cancella tutti i dati</Text>
+                <Text style={styles.resetDesc}>Riparte dall'onboarding come al primo accesso</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={16} color={Colors.text.muted} />
+            </TouchableOpacity>
+          </View>
+        </View>
 
         {/* Info */}
         <View style={styles.infoCard}>
@@ -601,6 +637,23 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.sm,
     color: Colors.text.primary,
     ...Typography.body,
+  },
+
+  // Developer section
+  resetRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    paddingVertical: 14,
+  },
+  resetLabel: {
+    ...Typography.bodyMedium,
+    color: Colors.semantic.danger,
+  },
+  resetDesc: {
+    ...Typography.caption,
+    color: Colors.text.muted,
+    marginTop: 2,
   },
 
   // Info card

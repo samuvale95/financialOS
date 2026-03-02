@@ -61,3 +61,12 @@ export const loadOnboardingData = () =>
   loadJSONObject<OnboardingData>(PATHS.onboarding, { completed: false });
 export const saveOnboardingData = (data: OnboardingData) =>
   saveJSONObject(PATHS.onboarding, data);
+
+/** Cancella tutti i file JSON dell'app (usato dal reset developer). */
+export async function clearAllData(): Promise<void> {
+  await Promise.all(
+    Object.values(PATHS).map((path) =>
+      FileSystem.deleteAsync(path, { idempotent: true })
+    )
+  );
+}
