@@ -1,5 +1,7 @@
 import type { Asset } from '../types';
 
+export const ALPHA_VANTAGE_API_KEY = ''; // fill in your key to enable Alpha Vantage
+
 export interface SearchResult {
   id: string;
   name: string;
@@ -112,6 +114,58 @@ export async function searchCoinGecko(query: string): Promise<SearchResult[]> {
     }));
   } catch {
     return [];
+  }
+}
+
+// ── Alpha Vantage ─────────────────────────────────────────────────────────────
+
+export async function fetchAlphaVantageAsset(symbol: string): Promise<FetchedAsset | null> {
+  if (!ALPHA_VANTAGE_API_KEY) return null;
+  const url = `https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${encodeURIComponent(symbol)}&apikey=${ALPHA_VANTAGE_API_KEY}`;
+  try {
+    const res = await fetchWithTimeout(url, {}, 10000);
+    if (!res.ok) return null;
+    const json = await res.json() as Record<string, unknown>;
+    const quote = (json['Global Quote'] as Record<string, unknown>) ?? {};
+    const price = parseFloat((quote['05. price'] as string) ?? '0');
+    if (!price) return null;
+    return {
+      name: symbol.toUpperCase(),
+      ticker: symbol.toUpperCase(),
+      type: 'stock',
+      currentPrice: price,
+      sparkline: [],
+    };
+  } catch {
+    return null;
+  }
+}
+
+// ── Stale-while-revalidate cache (24h) ───────────────────────────────────────
+
+export async function refreshAssetIfStale(asset: Asset): Promise<Partial<Asset> | null> {
+  if (asset.priceLastUpdated) {
+    const age = Date.now() - new Date(asset.priceLastUpdated).getTime();
+    if (age < 24 * 60 * 60 * 1000) return null; // still fresh
+  }
+
+  try {
+    let fetched: FetchedAsset | null = null;
+    if (asset.type === 'crypto' && asset.ticker) {
+      fetched = await fetchCoinGeckoAsset(asset.ticker.toLowerCase());
+    } else if (ALPHA_VANTAGE_API_KEY) {
+      fetched = await fetchAlphaVantageAsset(asset.ticker);
+    } else {
+      fetched = await lookupTickerDirect(asset.ticker);
+    }
+    if (!fetched) return null;
+    return {
+      currentPrice: fetched.currentPrice,
+      sparkline: fetched.sparkline.length > 0 ? fetched.sparkline : asset.sparkline,
+      priceLastUpdated: new Date().toISOString(),
+    };
+  } catch {
+    return null;
   }
 }
 

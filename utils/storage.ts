@@ -1,5 +1,5 @@
 import * as FileSystem from 'expo-file-system/legacy';
-import type { Transaction, StoredBudget, Asset, Goal, BankAccount, OnboardingData } from '../types';
+import type { Transaction, StoredBudget, Asset, Goal, BankAccount, OnboardingData, Subscription } from '../types';
 import type { InsightProfile } from './insightProfile';
 import { EMPTY_PROFILE } from './insightProfile';
 
@@ -11,6 +11,7 @@ const PATHS = {
   assets: `${BASE}financialOS_assets.json`,
   goals: `${BASE}financialOS_goals.json`,
   accounts: `${BASE}financialOS_accounts.json`,
+  subscriptions: `${BASE}financialOS_subscriptions.json`,
   onboarding: `${BASE}financialOS_onboarding.json`,
   insightProfile: `${BASE}financialOS_insightProfile.json`,
 };
@@ -59,6 +60,9 @@ export const saveGoals = (data: Goal[]) => saveJSON(PATHS.goals, data);
 
 export const loadAccounts = () => loadJSON<BankAccount>(PATHS.accounts);
 export const saveAccounts = (data: BankAccount[]) => saveJSON(PATHS.accounts, data);
+
+export const loadSubscriptions = () => loadJSON<Subscription>(PATHS.subscriptions);
+export const saveSubscriptions = (data: Subscription[]) => saveJSON(PATHS.subscriptions, data);
 
 export const loadOnboardingData = () =>
   loadJSONObject<OnboardingData>(PATHS.onboarding, { completed: false });

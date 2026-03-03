@@ -16,11 +16,12 @@ import { Colors, Typography, Radius } from '../constants/theme';
 import { CATEGORIES, EXPENSE_CATEGORIES, INCOME_CATEGORIES } from '../constants/categories';
 import type { CategoryId } from '../constants/categories';
 import { useData } from '../contexts/DataContext';
+import type { TransactionSplit } from '../types';
 
 type TxType = 'expense' | 'income';
 
 export default function AddTransactionScreen() {
-  const { addTransaction } = useData();
+  const { addTransaction, accounts } = useData();
 
   const [type, setType] = useState<TxType>('expense');
   const [amount, setAmount] = useState('');
@@ -29,42 +30,115 @@ export default function AddTransactionScreen() {
   const [merchant, setMerchant] = useState('');
   const [note, setNote] = useState('');
 
+  // Account / transfer
+  const [accountId, setAccountId] = useState<string | undefined>(undefined);
+  const [isTransfer, setIsTransfer] = useState(false);
+  const [transferToAccountId, setTransferToAccountId] = useState<string | undefined>(undefined);
+
+  // Tags
+  const [tagInput, setTagInput] = useState('');
+  const [tags, setTags] = useState<string[]>([]);
+
+  // Splits
+  const [splitMode, setSplitMode] = useState(false);
+  const [splits, setSplits] = useState<TransactionSplit[]>([
+    { categoryId: 'food', amount: 0 },
+  ]);
+
   const categories = type === 'expense' ? EXPENSE_CATEGORIES : INCOME_CATEGORIES;
 
   const handleTypeToggle = (t: TxType) => {
     Haptics.selectionAsync();
     setType(t);
     setCategory(null);
+    setIsTransfer(false);
+    setSplitMode(false);
+    setSplits([{ categoryId: 'food', amount: 0 }]);
   };
 
+  // Tags helpers
+  function commitTag() {
+    const trimmed = tagInput.trim().replace(/^[,\s]+|[,\s]+$/g, '');
+    if (trimmed && !tags.includes(trimmed)) {
+      setTags((prev) => [...prev, trimmed]);
+    }
+    setTagInput('');
+  }
+
+  function handleTagInput(v: string) {
+    if (v.endsWith(' ') || v.endsWith(',')) {
+      setTagInput(v.slice(0, -1));
+      commitTag();
+    } else {
+      setTagInput(v);
+    }
+  }
+
+  function removeTag(tag: string) {
+    setTags((prev) => prev.filter((t) => t !== tag));
+  }
+
+  // Splits helpers
+  function addSplitRow() {
+    setSplits((prev) => [...prev, { categoryId: 'other', amount: 0 }]);
+  }
+
+  function removeSplitRow(idx: number) {
+    setSplits((prev) => prev.filter((_, i) => i !== idx));
+  }
+
+  function updateSplitCategory(idx: number, cat: CategoryId) {
+    setSplits((prev) => prev.map((s, i) => (i === idx ? { ...s, categoryId: cat } : s)));
+  }
+
+  function updateSplitAmount(idx: number, val: string) {
+    const num = parseFloat(val.replace(',', '.')) || 0;
+    setSplits((prev) => prev.map((s, i) => (i === idx ? { ...s, amount: num } : s)));
+  }
+
+  const splitsTotal = splits.reduce((s, r) => s + r.amount, 0);
+  const parsedAmount = parseFloat(amount.replace(',', '.'));
+
   const handleSubmit = () => {
-    const parsed = parseFloat(amount.replace(',', '.'));
-    if (!parsed || parsed <= 0) {
+    if (!parsedAmount || parsedAmount <= 0) {
       Alert.alert('Importo non valido', 'Inserisci un importo maggiore di zero.');
       return;
     }
-    if (!category) {
+    if (!isTransfer && !category) {
       Alert.alert('Categoria mancante', 'Seleziona una categoria.');
       return;
     }
+    if (splitMode && splitsTotal > parsedAmount) {
+      Alert.alert('Split non valido', 'La somma degli split supera l\'importo totale.');
+      return;
+    }
+    if (isTransfer && !transferToAccountId) {
+      Alert.alert('Conto destinazione mancante', 'Seleziona il conto di destinazione.');
+      return;
+    }
 
-    const finalAmount = type === 'expense' ? -parsed : parsed;
+    const finalAmount = type === 'expense' ? -parsedAmount : parsedAmount;
     const today = new Date().toISOString().split('T')[0];
 
     addTransaction({
       date: today,
       amount: finalAmount,
       description: description.trim() || (category ? CATEGORIES[category].label : 'Transazione'),
-      category,
+      category: isTransfer ? 'other' : (category ?? 'other'),
       merchant: merchant.trim() || undefined,
       note: note.trim() || undefined,
+      accountId: accountId || undefined,
+      transferToAccountId: isTransfer ? transferToAccountId : undefined,
+      isTransfer: isTransfer || undefined,
+      splits: splitMode && splits.length > 0 ? splits : undefined,
+      tags: tags.length > 0 ? tags : undefined,
     });
 
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     router.back();
   };
 
-  const isValid = parseFloat(amount.replace(',', '.')) > 0 && category !== null;
+  const isValid = parsedAmount > 0 && (isTransfer || category !== null);
 
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
@@ -128,39 +202,112 @@ export default function AddTransactionScreen() {
           />
         </View>
 
-        {/* Category grid */}
-        <View style={styles.section}>
-          <Text style={styles.sectionLabel}>Categoria</Text>
-          <View style={styles.categoryGrid}>
-            {categories.map((cat) => (
+        {/* Account selector */}
+        {accounts.length > 0 && (
+          <View style={styles.section}>
+            <Text style={styles.sectionLabel}>Conto</Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
               <TouchableOpacity
-                key={cat.id}
-                style={[
-                  styles.catItem,
-                  category === cat.id && { borderColor: cat.color, backgroundColor: cat.bgColor },
-                ]}
-                onPress={() => {
-                  Haptics.selectionAsync();
-                  setCategory(cat.id);
-                }}
+                style={[styles.chip, !accountId && styles.chipActive]}
+                onPress={() => { setAccountId(undefined); setIsTransfer(false); }}
                 activeOpacity={0.7}
               >
-                <View style={[styles.catIcon, { backgroundColor: cat.bgColor }]}>
-                  <Ionicons name={cat.icon as any} size={18} color={cat.color} />
-                </View>
-                <Text
-                  style={[
-                    styles.catLabel,
-                    category === cat.id && { color: cat.color, fontWeight: '600' },
-                  ]}
-                  numberOfLines={1}
-                >
-                  {cat.label}
-                </Text>
+                <Text style={[styles.chipLabel, !accountId && styles.chipLabelActive]}>Nessuno</Text>
               </TouchableOpacity>
-            ))}
+              {accounts.map((acc) => (
+                <TouchableOpacity
+                  key={acc.id}
+                  style={[styles.chip, accountId === acc.id && styles.chipActive]}
+                  onPress={() => { setAccountId(acc.id); }}
+                  activeOpacity={0.7}
+                >
+                  <Text style={[styles.chipLabel, accountId === acc.id && styles.chipLabelActive]}>
+                    {acc.accountLabel}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+
+            {/* Transfer toggle */}
+            {accountId && (
+              <View style={styles.transferRow}>
+                <TouchableOpacity
+                  style={[styles.toggleBtn, isTransfer && styles.toggleBtnActive]}
+                  onPress={() => { setIsTransfer((v) => !v); Haptics.selectionAsync(); }}
+                  activeOpacity={0.7}
+                >
+                  <Ionicons
+                    name="swap-horizontal"
+                    size={16}
+                    color={isTransfer ? Colors.accent.primary : Colors.text.muted}
+                  />
+                  <Text style={[styles.toggleLabel, isTransfer && styles.toggleLabelActive]}>
+                    Trasferimento tra conti
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {/* Transfer destination */}
+            {isTransfer && (
+              <View style={styles.section}>
+                <Text style={styles.sectionLabel}>Conto destinazione</Text>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
+                  {accounts
+                    .filter((a) => a.id !== accountId)
+                    .map((acc) => (
+                      <TouchableOpacity
+                        key={acc.id}
+                        style={[styles.chip, transferToAccountId === acc.id && styles.chipActive]}
+                        onPress={() => setTransferToAccountId(acc.id)}
+                        activeOpacity={0.7}
+                      >
+                        <Text style={[styles.chipLabel, transferToAccountId === acc.id && styles.chipLabelActive]}>
+                          {acc.accountLabel}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                </ScrollView>
+              </View>
+            )}
           </View>
-        </View>
+        )}
+
+        {/* Category grid — hidden for transfers */}
+        {!isTransfer && (
+          <View style={styles.section}>
+            <Text style={styles.sectionLabel}>Categoria</Text>
+            <View style={styles.categoryGrid}>
+              {categories.map((cat) => (
+                <TouchableOpacity
+                  key={cat.id}
+                  style={[
+                    styles.catItem,
+                    category === cat.id && { borderColor: cat.color, backgroundColor: cat.bgColor },
+                  ]}
+                  onPress={() => {
+                    Haptics.selectionAsync();
+                    setCategory(cat.id);
+                  }}
+                  activeOpacity={0.7}
+                >
+                  <View style={[styles.catIcon, { backgroundColor: cat.bgColor }]}>
+                    <Ionicons name={cat.icon as any} size={18} color={cat.color} />
+                  </View>
+                  <Text
+                    style={[
+                      styles.catLabel,
+                      category === cat.id && { color: cat.color, fontWeight: '600' },
+                    ]}
+                    numberOfLines={1}
+                  >
+                    {cat.label}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </View>
+        )}
 
         {/* Fields */}
         <View style={styles.section}>
@@ -187,8 +334,108 @@ export default function AddTransactionScreen() {
               onChangeText={setNote}
               multiline
             />
+            <View style={styles.fieldDivider} />
+
+            {/* Tags */}
+            <View style={styles.tagsRow}>
+              <Ionicons name="pricetag-outline" size={18} color={Colors.text.muted} />
+              <View style={styles.tagsContent}>
+                {tags.map((tag) => (
+                  <View key={tag} style={styles.tagChip}>
+                    <Text style={styles.tagChipLabel}>{tag}</Text>
+                    <TouchableOpacity onPress={() => removeTag(tag)} hitSlop={8}>
+                      <Ionicons name="close" size={12} color={Colors.text.secondary} />
+                    </TouchableOpacity>
+                  </View>
+                ))}
+                <TextInput
+                  style={styles.tagInput}
+                  placeholder={tags.length === 0 ? 'Tag (spazio per aggiungere)' : ''}
+                  placeholderTextColor={Colors.text.muted}
+                  value={tagInput}
+                  onChangeText={handleTagInput}
+                  onSubmitEditing={commitTag}
+                  returnKeyType="done"
+                />
+              </View>
+            </View>
+
+            {/* Split mode toggle */}
+            {!isTransfer && (
+              <>
+                <View style={styles.fieldDivider} />
+                <TouchableOpacity
+                  style={styles.splitToggleRow}
+                  onPress={() => { setSplitMode((v) => !v); Haptics.selectionAsync(); }}
+                  activeOpacity={0.7}
+                >
+                  <Ionicons
+                    name="git-branch-outline"
+                    size={18}
+                    color={splitMode ? Colors.accent.primary : Colors.text.muted}
+                  />
+                  <Text style={[styles.fieldInput, splitMode && { color: Colors.accent.primary }]}>
+                    Dividi per categoria
+                  </Text>
+                  <Ionicons
+                    name={splitMode ? 'chevron-up' : 'chevron-down'}
+                    size={16}
+                    color={Colors.text.muted}
+                  />
+                </TouchableOpacity>
+              </>
+            )}
           </View>
         </View>
+
+        {/* Split rows */}
+        {splitMode && !isTransfer && (
+          <View style={styles.section}>
+            <Text style={styles.sectionLabel}>
+              Split — totale: €{splitsTotal.toFixed(2)}
+              {parsedAmount > 0 && splitsTotal > parsedAmount ? (
+                <Text style={{ color: Colors.semantic.danger }}> (supera importo)</Text>
+              ) : null}
+            </Text>
+            {splits.map((split, idx) => (
+              <View key={idx} style={styles.splitRow}>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.splitCatRow}>
+                  {EXPENSE_CATEGORIES.map((cat) => (
+                    <TouchableOpacity
+                      key={cat.id}
+                      style={[styles.splitCatChip, split.categoryId === cat.id && { backgroundColor: cat.bgColor, borderColor: cat.color }]}
+                      onPress={() => updateSplitCategory(idx, cat.id)}
+                      activeOpacity={0.7}
+                    >
+                      <Text style={[styles.splitCatLabel, split.categoryId === cat.id && { color: cat.color }]}>
+                        {cat.label}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+                <View style={styles.splitAmountRow}>
+                  <TextInput
+                    style={styles.splitAmountInput}
+                    value={split.amount > 0 ? String(split.amount) : ''}
+                    onChangeText={(v) => updateSplitAmount(idx, v)}
+                    placeholder="€"
+                    placeholderTextColor={Colors.text.muted}
+                    keyboardType="decimal-pad"
+                  />
+                  {splits.length > 1 && (
+                    <TouchableOpacity onPress={() => removeSplitRow(idx)} hitSlop={8}>
+                      <Ionicons name="close-circle" size={20} color={Colors.semantic.danger} />
+                    </TouchableOpacity>
+                  )}
+                </View>
+              </View>
+            ))}
+            <TouchableOpacity style={styles.addSplitBtn} onPress={addSplitRow} activeOpacity={0.7}>
+              <Ionicons name="add" size={16} color={Colors.accent.primary} />
+              <Text style={styles.addSplitLabel}>Aggiungi voce</Text>
+            </TouchableOpacity>
+          </View>
+        )}
 
         {/* Submit */}
         <TouchableOpacity
@@ -310,11 +557,37 @@ const styles = StyleSheet.create({
     letterSpacing: 0.8,
     paddingHorizontal: 4,
   },
-  categoryGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
+  // Account / transfer
+  chipRow: { flexDirection: 'row', gap: 8, paddingVertical: 2 },
+  chip: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: Radius.lg,
+    backgroundColor: Colors.bg.card,
+    borderWidth: 1,
+    borderColor: Colors.border.default,
   },
+  chipActive: { borderColor: Colors.accent.primary, backgroundColor: Colors.accent.glow },
+  chipLabel: { ...Typography.caption, color: Colors.text.secondary, fontWeight: '600' },
+  chipLabelActive: { color: Colors.accent.primary },
+  transferRow: { marginTop: 4 },
+  toggleBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: Radius.md,
+    backgroundColor: Colors.bg.card,
+    borderWidth: 1,
+    borderColor: Colors.border.default,
+    alignSelf: 'flex-start',
+  },
+  toggleBtnActive: { borderColor: Colors.accent.primary, backgroundColor: Colors.accent.glow },
+  toggleLabel: { ...Typography.caption, color: Colors.text.muted, fontWeight: '600' },
+  toggleLabelActive: { color: Colors.accent.primary },
+  // Category grid
+  categoryGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   catItem: {
     width: '22%',
     flexGrow: 1,
@@ -333,11 +606,8 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-  catLabel: {
-    ...Typography.micro,
-    color: Colors.text.secondary,
-    textAlign: 'center',
-  },
+  catLabel: { ...Typography.micro, color: Colors.text.secondary, textAlign: 'center' },
+  // Fields
   fieldsCard: {
     backgroundColor: Colors.bg.card,
     borderRadius: Radius.lg,
@@ -359,6 +629,93 @@ const styles = StyleSheet.create({
   },
   fieldRowMultiline: { alignItems: 'flex-start' },
   fieldDivider: { height: 1, backgroundColor: Colors.border.subtle },
+  // Tags
+  tagsRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+    paddingVertical: 12,
+  },
+  tagsContent: {
+    flex: 1,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    alignItems: 'center',
+  },
+  tagChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: Colors.accent.glow,
+    borderRadius: Radius.sm,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderWidth: 1,
+    borderColor: Colors.border.accent,
+  },
+  tagChipLabel: { ...Typography.caption, color: Colors.accent.primary, fontWeight: '600' },
+  tagInput: {
+    ...Typography.bodyMedium,
+    color: Colors.text.primary,
+    minWidth: 120,
+    paddingVertical: 2,
+  },
+  // Split toggle
+  splitToggleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: 14,
+  },
+  // Split rows
+  splitRow: {
+    backgroundColor: Colors.bg.card,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: Colors.border.default,
+    padding: 10,
+    gap: 8,
+  },
+  splitCatRow: { flexDirection: 'row', gap: 6 },
+  splitCatChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: Radius.sm,
+    backgroundColor: Colors.bg.secondary,
+    borderWidth: 1,
+    borderColor: Colors.border.default,
+  },
+  splitCatLabel: { ...Typography.caption, color: Colors.text.muted, fontWeight: '600' },
+  splitAmountRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  splitAmountInput: {
+    flex: 1,
+    backgroundColor: Colors.bg.secondary,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: Colors.border.default,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    ...Typography.bodyMedium,
+    color: Colors.text.primary,
+  },
+  addSplitBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 10,
+    justifyContent: 'center',
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: Colors.border.accent,
+    borderStyle: 'dashed',
+  },
+  addSplitLabel: { ...Typography.caption, color: Colors.accent.primary, fontWeight: '600' },
+  // Submit
   submitBtn: {
     flexDirection: 'row',
     alignItems: 'center',

@@ -1,5 +1,10 @@
 import type { CategoryId } from '../constants/categories';
 
+export interface TransactionSplit {
+  categoryId: CategoryId;
+  amount: number;
+}
+
 export interface Transaction {
   id: string;
   date: string; // ISO date string
@@ -8,6 +13,11 @@ export interface Transaction {
   category: CategoryId;
   merchant?: string;
   note?: string;
+  accountId?: string;
+  transferToAccountId?: string;
+  isTransfer?: boolean;
+  splits?: TransactionSplit[];
+  tags?: string[];
 }
 
 export interface Budget {
@@ -35,6 +45,21 @@ export interface Asset {
   purchasePrice: number;
   color: string;
   sparkline: number[]; // last 7 data points
+  priceLastUpdated?: string; // ISO datetime for 24h cache
+}
+
+export type SubscriptionFrequency = 'monthly' | 'quarterly' | 'annual';
+
+export interface Subscription {
+  id: string;
+  name: string;
+  emoji?: string;
+  amount: number;
+  frequency: SubscriptionFrequency;
+  nextDueDate: string; // ISO date string
+  category: CategoryId;
+  color: string;
+  active: boolean;
 }
 
 export interface Insight {

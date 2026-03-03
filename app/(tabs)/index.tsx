@@ -15,12 +15,13 @@ import { IncomeExpenseRow } from '../../components/dashboard/IncomeExpenseRow';
 import { BudgetSection } from '../../components/dashboard/BudgetSection';
 import { RecentTransactions } from '../../components/dashboard/RecentTransactions';
 import { GoalCard } from '../../components/dashboard/GoalCard';
+import { CashFlowCard } from '../../components/dashboard/CashFlowCard';
 import { Skeleton } from '../../components/ui/Skeleton';
 import { useData } from '../../contexts/DataContext';
 import { useSettings } from '../../contexts/SettingsContext';
 
 export default function DashboardScreen() {
-  const { transactions, budgets, goals, monthSummary, isLoading } = useData();
+  const { transactions, budgets, goals, subscriptions, monthSummary, isLoading } = useData();
   const { settings } = useSettings();
 
   const today = new Date().toLocaleDateString('it-IT', {
@@ -84,6 +85,11 @@ export default function DashboardScreen() {
               income={monthSummary.income}
               expenses={monthSummary.expenses}
               savingsRate={monthSummary.savingsRate}
+            />
+            <CashFlowCard
+              monthSummary={monthSummary}
+              subscriptions={subscriptions}
+              transactions={transactions}
             />
             {settings.features.goals && goals.length > 0 && <GoalCard goal={goals[0]} />}
             {settings.features.budgets && <BudgetSection budgets={budgets} />}

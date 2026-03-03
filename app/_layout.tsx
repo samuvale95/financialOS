@@ -49,6 +49,14 @@ export default function RootLayout() {
             <Stack.Screen name="asset/[id]" />
             <Stack.Screen name="budget/[id]" />
             <Stack.Screen name="add-transaction" />
+            <Stack.Screen
+              name="goals"
+              options={{ presentation: 'modal', animation: 'slide_from_bottom' }}
+            />
+            <Stack.Screen
+              name="subscriptions"
+              options={{ presentation: 'modal', animation: 'slide_from_bottom' }}
+            />
           </Stack>
         </DataProvider>
       </SettingsProvider>

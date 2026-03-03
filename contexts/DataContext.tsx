@@ -6,7 +6,7 @@ import React, {
   useCallback,
   useMemo,
 } from 'react';
-import type { Transaction, Budget, Asset, Goal, MonthSummary, Insight, StoredBudget, BankAccount } from '../types';
+import type { Transaction, Budget, Asset, Goal, MonthSummary, Insight, StoredBudget, BankAccount, Subscription } from '../types';
 import type { CategoryId } from '../constants/categories';
 import { CATEGORIES } from '../constants/categories';
 import {
@@ -15,9 +15,11 @@ import {
   loadAssets, saveAssets,
   loadGoals, saveGoals,
   loadAccounts, saveAccounts,
+  loadSubscriptions, saveSubscriptions,
   loadInsightProfile, saveInsightProfile,
   clearAllData,
 } from '../utils/storage';
+import { refreshAssetIfStale } from '../utils/financialApi';
 import type { InsightProfile } from '../utils/insightProfile';
 import { EMPTY_PROFILE } from '../utils/insightProfile';
 
@@ -112,6 +114,7 @@ interface AppData {
   assets: Asset[];
   goals: Goal[];
   accounts: BankAccount[];
+  subscriptions: Subscription[];
   monthSummary: MonthSummary;
   insights: Insight[];
   insightProfile: InsightProfile;
@@ -123,9 +126,14 @@ interface AppData {
   updateAsset: (id: string, updates: Partial<Asset>) => void;
   addGoal: (g: Omit<Goal, 'id'>) => void;
   updateGoal: (id: string, updates: Partial<Goal>) => void;
+  deleteGoal: (id: string) => void;
   addAccount: (a: Omit<BankAccount, 'id'>) => void;
   updateAccount: (id: string, updates: Partial<BankAccount>) => void;
   deleteAccount: (id: string) => void;
+  addSubscription: (s: Omit<Subscription, 'id'>) => void;
+  updateSubscription: (id: string, updates: Partial<Subscription>) => void;
+  deleteSubscription: (id: string) => void;
+  refreshAssetPrices: () => Promise<void>;
   answerQuestion: (questionId: string, tag: string) => void;
   dismissQuestion: (questionId: string) => void;
   resetAll: () => Promise<void>;
@@ -139,6 +147,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
   const [assets, setAssets] = useState<Asset[]>([]);
   const [goals, setGoals] = useState<Goal[]>([]);
   const [accounts, setAccounts] = useState<BankAccount[]>([]);
+  const [subscriptions, setSubscriptions] = useState<Subscription[]>([]);
   const [insightProfile, setInsightProfile] = useState<InsightProfile>(EMPTY_PROFILE);
   const [isLoading, setIsLoading] = useState(true);
 
@@ -149,12 +158,21 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       loadAssets(),
       loadGoals(),
       loadAccounts(),
+      loadSubscriptions(),
       loadInsightProfile(),
-    ]).then(([txs, buds, ass, gls, accs, profile]) => {
+    ]).then(([txs, buds, ass, gls, accs, subs, profile]) => {
       setTransactions(txs);
-      setAssets(ass);
+      // Deduplicate assets by id in case of corrupted storage
+      const seenAssets = new Set<string>();
+      const dedupedAssets = ass.filter((a) => {
+        if (seenAssets.has(a.id)) return false;
+        seenAssets.add(a.id);
+        return true;
+      });
+      setAssets(dedupedAssets);
       setGoals(gls);
       setAccounts(accs);
+      setSubscriptions(subs);
       setInsightProfile(profile);
       if (buds.length > 0) {
         setStoredBudgets(buds);
@@ -178,7 +196,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
 
   const monthSummary = useMemo<MonthSummary>(() => {
     const prefix = getCurrentMonthPrefix();
-    const monthTx = transactions.filter((t) => t.date.startsWith(prefix));
+    const monthTx = transactions.filter((t) => t.date.startsWith(prefix) && !t.isTransfer);
     const income = monthTx.filter((t) => t.amount > 0).reduce((s, t) => s + t.amount, 0);
     const expenses = monthTx.filter((t) => t.amount < 0).reduce((s, t) => s + Math.abs(t.amount), 0);
     const savings = income - expenses;
@@ -235,7 +253,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
 
   const addAsset = useCallback((a: Omit<Asset, 'id'>) => {
     setAssets((prev) => {
-      const next = [...prev, { ...a, id: `a_${Date.now()}` }];
+      const next = [...prev, { ...a, id: `a_${Date.now()}_${Math.random().toString(36).slice(2, 6)}` }];
       saveAssets(next);
       return next;
     });
@@ -264,6 +282,50 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       return next;
     });
   }, []);
+
+  const deleteGoal = useCallback((id: string) => {
+    setGoals((prev) => {
+      const next = prev.filter((g) => g.id !== id);
+      saveGoals(next);
+      return next;
+    });
+  }, []);
+
+  const addSubscription = useCallback((s: Omit<Subscription, 'id'>) => {
+    setSubscriptions((prev) => {
+      const next = [...prev, { ...s, id: `sub_${Date.now()}` }];
+      saveSubscriptions(next);
+      return next;
+    });
+  }, []);
+
+  const updateSubscription = useCallback((id: string, updates: Partial<Subscription>) => {
+    setSubscriptions((prev) => {
+      const next = prev.map((s) => (s.id === id ? { ...s, ...updates } : s));
+      saveSubscriptions(next);
+      return next;
+    });
+  }, []);
+
+  const deleteSubscription = useCallback((id: string) => {
+    setSubscriptions((prev) => {
+      const next = prev.filter((s) => s.id !== id);
+      saveSubscriptions(next);
+      return next;
+    });
+  }, []);
+
+  const refreshAssetPrices = useCallback(async () => {
+    const current = assets;
+    await Promise.all(
+      current.map(async (asset) => {
+        const updates = await refreshAssetIfStale(asset);
+        if (updates) {
+          updateAsset(asset.id, updates);
+        }
+      })
+    );
+  }, [assets, updateAsset]);
 
   const addAccount = useCallback((a: Omit<BankAccount, 'id'>) => {
     setAccounts((prev) => {
@@ -324,6 +386,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     setAssets([]);
     setGoals([]);
     setAccounts([]);
+    setSubscriptions([]);
     setInsightProfile(EMPTY_PROFILE);
   }, []);
 
@@ -335,6 +398,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
         assets,
         goals,
         accounts,
+        subscriptions,
         monthSummary,
         insights,
         insightProfile,
@@ -346,9 +410,14 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
         updateAsset,
         addGoal,
         updateGoal,
+        deleteGoal,
         addAccount,
         updateAccount,
         deleteAccount,
+        addSubscription,
+        updateSubscription,
+        deleteSubscription,
+        refreshAssetPrices,
         answerQuestion,
         dismissQuestion,
         resetAll,
