@@ -1,5 +1,7 @@
 import * as FileSystem from 'expo-file-system/legacy';
 import type { Transaction, StoredBudget, Asset, Goal, BankAccount, OnboardingData } from '../types';
+import type { InsightProfile } from './insightProfile';
+import { EMPTY_PROFILE } from './insightProfile';
 
 const BASE = FileSystem.documentDirectory!;
 
@@ -10,6 +12,7 @@ const PATHS = {
   goals: `${BASE}financialOS_goals.json`,
   accounts: `${BASE}financialOS_accounts.json`,
   onboarding: `${BASE}financialOS_onboarding.json`,
+  insightProfile: `${BASE}financialOS_insightProfile.json`,
 };
 
 async function loadJSON<T>(path: string): Promise<T[]> {
@@ -61,6 +64,11 @@ export const loadOnboardingData = () =>
   loadJSONObject<OnboardingData>(PATHS.onboarding, { completed: false });
 export const saveOnboardingData = (data: OnboardingData) =>
   saveJSONObject(PATHS.onboarding, data);
+
+export const loadInsightProfile = () =>
+  loadJSONObject<InsightProfile>(PATHS.insightProfile, EMPTY_PROFILE);
+export const saveInsightProfile = (data: InsightProfile) =>
+  saveJSONObject(PATHS.insightProfile, data);
 
 /** Cancella tutti i file JSON dell'app (usato dal reset developer). */
 export async function clearAllData(): Promise<void> {

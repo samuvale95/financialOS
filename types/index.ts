@@ -83,6 +83,8 @@ export interface BankAccount {
   lastUpdated: string;
 }
 
+// ── Onboarding enums ──────────────────────────────────────────────────────────
+
 export type OnboardingGoalId =
   | 'risparmio'
   | 'casa'
@@ -95,12 +97,42 @@ export type EffortLevel = 'leggero' | 'moderato' | 'intenso';
 
 export type IncomeType = 'salary' | 'freelance' | 'rent' | 'dividends' | 'pension' | 'other';
 
+export type FamilyStatus = 'single' | 'partner' | 'married' | 'separated' | 'widowed';
+
+export type HousingType = 'owner' | 'renter' | 'family' | 'other';
+
+export type WorkType = 'employee' | 'freelance' | 'entrepreneur' | 'retired' | 'student' | 'other';
+
+export type IncomeStability = 'stable' | 'variable' | 'seasonal';
+
+// ── Onboarding data models ────────────────────────────────────────────────────
+
 export interface IncomeSource {
   id: string;
   type: IncomeType;
   label: string;
   amount: number;
   frequency: 'monthly' | 'annual';
+}
+
+export interface UserProfile {
+  name?: string;
+  birthYear?: number;
+  region?: string;
+  familyStatus: FamilyStatus;
+  householdSize: number;
+  dependents: number;
+}
+
+export interface HousingInfo {
+  type: HousingType;
+  monthlyCost: number;
+}
+
+export interface WorkInfo {
+  type: WorkType;
+  sector?: string;
+  stability: IncomeStability;
 }
 
 export interface OnboardingData {
@@ -111,4 +143,7 @@ export interface OnboardingData {
   incomeSources?: IncomeSource[];
   mainGoal?: OnboardingGoalId;
   effortLevel?: EffortLevel;
+  userProfile?: UserProfile;
+  housingInfo?: HousingInfo;
+  workInfo?: WorkInfo;
 }

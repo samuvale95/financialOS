@@ -15,8 +15,11 @@ import {
   loadAssets, saveAssets,
   loadGoals, saveGoals,
   loadAccounts, saveAccounts,
+  loadInsightProfile, saveInsightProfile,
   clearAllData,
 } from '../utils/storage';
+import type { InsightProfile } from '../utils/insightProfile';
+import { EMPTY_PROFILE } from '../utils/insightProfile';
 
 const DEFAULT_BUDGET_LIMITS: StoredBudget[] = [
   { id: 'b_food', category: 'food', limit: 400, period: 'monthly' },
@@ -111,6 +114,7 @@ interface AppData {
   accounts: BankAccount[];
   monthSummary: MonthSummary;
   insights: Insight[];
+  insightProfile: InsightProfile;
   isLoading: boolean;
   addTransaction: (t: Omit<Transaction, 'id'>) => void;
   addTransactions: (ts: Omit<Transaction, 'id'>[]) => number;
@@ -122,6 +126,8 @@ interface AppData {
   addAccount: (a: Omit<BankAccount, 'id'>) => void;
   updateAccount: (id: string, updates: Partial<BankAccount>) => void;
   deleteAccount: (id: string) => void;
+  answerQuestion: (questionId: string, tag: string) => void;
+  dismissQuestion: (questionId: string) => void;
   resetAll: () => Promise<void>;
 }
 
@@ -133,6 +139,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
   const [assets, setAssets] = useState<Asset[]>([]);
   const [goals, setGoals] = useState<Goal[]>([]);
   const [accounts, setAccounts] = useState<BankAccount[]>([]);
+  const [insightProfile, setInsightProfile] = useState<InsightProfile>(EMPTY_PROFILE);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
@@ -142,11 +149,13 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       loadAssets(),
       loadGoals(),
       loadAccounts(),
-    ]).then(([txs, buds, ass, gls, accs]) => {
+      loadInsightProfile(),
+    ]).then(([txs, buds, ass, gls, accs, profile]) => {
       setTransactions(txs);
       setAssets(ass);
       setGoals(gls);
       setAccounts(accs);
+      setInsightProfile(profile);
       if (buds.length > 0) {
         setStoredBudgets(buds);
       } else {
@@ -280,6 +289,34 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     });
   }, []);
 
+  const answerQuestion = useCallback((questionId: string, tag: string) => {
+    setInsightProfile((prev) => {
+      const next: InsightProfile = {
+        ...prev,
+        answeredQuestions: {
+          ...prev.answeredQuestions,
+          [questionId]: { tag, answeredAt: new Date().toISOString() },
+        },
+      };
+      saveInsightProfile(next);
+      return next;
+    });
+  }, []);
+
+  const dismissQuestion = useCallback((questionId: string) => {
+    setInsightProfile((prev) => {
+      const next: InsightProfile = {
+        ...prev,
+        dismissedQuestions: {
+          ...prev.dismissedQuestions,
+          [questionId]: new Date().toISOString(),
+        },
+      };
+      saveInsightProfile(next);
+      return next;
+    });
+  }, []);
+
   const resetAll = useCallback(async () => {
     await clearAllData();
     setTransactions([]);
@@ -287,6 +324,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     setAssets([]);
     setGoals([]);
     setAccounts([]);
+    setInsightProfile(EMPTY_PROFILE);
   }, []);
 
   return (
@@ -299,6 +337,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
         accounts,
         monthSummary,
         insights,
+        insightProfile,
         isLoading,
         addTransaction,
         addTransactions,
@@ -310,6 +349,8 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
         addAccount,
         updateAccount,
         deleteAccount,
+        answerQuestion,
+        dismissQuestion,
         resetAll,
       }}
     >

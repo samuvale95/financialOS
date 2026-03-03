@@ -313,8 +313,9 @@ export default function ImportaScreen() {
           <Button
             label="Vedi Transazioni"
             onPress={() => { handleReset(); router.push('/(tabs)/spese'); }}
+            fullWidth
           />
-          <Button label="Importa altro" onPress={handleReset} variant="ghost" />
+          <Button label="Importa altro" onPress={handleReset} variant="ghost" fullWidth />
         </ScrollView>
       </SafeAreaView>
     );
@@ -641,13 +642,13 @@ const styles = StyleSheet.create({
   },
   balanceCardTitle: { ...Typography.h3, color: Colors.text.primary },
   balanceCardSub: { ...Typography.caption, color: Colors.text.secondary },
-  accountsScroll: { maxHeight: 64 },
+  accountsScroll: { maxHeight: 72 },
   accountChipBtn: {
     backgroundColor: Colors.bg.elevated,
     borderRadius: Radius.full,
     paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.xs,
-    marginRight: Spacing.xs,
+    paddingVertical: 8,
+    marginRight: Spacing.sm,
     borderWidth: 1,
     borderColor: Colors.border.default,
     alignItems: 'center',
@@ -675,14 +676,14 @@ const styles = StyleSheet.create({
   },
   ghostSmallBtn: {
     paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.sm,
+    paddingVertical: 12,
   },
   ghostSmallBtnText: { ...Typography.bodyMedium, color: Colors.text.secondary },
   accentBtn: {
     backgroundColor: Colors.accent.primary,
     borderRadius: Radius.md,
     paddingHorizontal: Spacing.lg,
-    paddingVertical: Spacing.sm,
+    paddingVertical: 12,
   },
   accentBtnDisabled: { opacity: 0.4 },
   accentBtnText: { ...Typography.bodyMedium, color: '#fff', fontWeight: '600' },

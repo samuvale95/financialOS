@@ -43,6 +43,11 @@ function findHeaderLine(lines: string[]): { headerIndex: number; headerLine: str
 
 function parseItalianDate(dateStr: string): string | null {
   const s = dateStr.trim();
+  if (!s) return null;
+  // Already ISO: YYYY-MM-DD
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+    return isNaN(Date.parse(s)) ? null : s;
+  }
   // D/M/YYYY, DD/MM/YYYY, DD/MM/YY
   const match = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
   if (!match) return null;
@@ -185,5 +190,6 @@ export function parseCSV(content: string): ParseResult {
     }
   }
 
+  transactions.sort((a, b) => b.date.localeCompare(a.date));
   return { transactions, bankName: BANK_NAMES[bank], skipped };
 }

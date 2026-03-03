@@ -8,7 +8,7 @@ import { SettingsProvider } from '../contexts/SettingsContext';
 import { DataProvider } from '../contexts/DataContext';
 import { loadOnboardingData } from '../utils/storage';
 
-SplashScreen.preventAutoHideAsync();
+SplashScreen.preventAutoHideAsync().catch(() => {});
 
 export default function RootLayout() {
   const navState = useRootNavigationState();
@@ -19,7 +19,7 @@ export default function RootLayout() {
     loadOnboardingData().then((data) => {
       setNeedsOnboarding(!data.completed);
       setOnboardingChecked(true);
-      SplashScreen.hideAsync();
+      SplashScreen.hideAsync().catch(() => {});
     });
   }, []);
 

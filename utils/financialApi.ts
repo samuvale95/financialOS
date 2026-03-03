@@ -6,7 +6,7 @@ export interface SearchResult {
   ticker: string;
   type: 'stock' | 'etf' | 'crypto' | 'bond';
   exchange?: string;
-  source: 'tiingo' | 'coingecko' | 'local';
+  source: 'coingecko' | 'local';
 }
 
 export interface FetchedAsset {
@@ -22,23 +22,6 @@ const ASSET_COLORS = ['#6C63FF', '#4FC3F7', '#FF9500', '#FF6B6B', '#00D68F', '#B
 let _colorIndex = 0;
 export function nextAssetColor(): string {
   return ASSET_COLORS[(_colorIndex++) % ASSET_COLORS.length];
-}
-
-// ── Tiingo Configuration ──────────────────────────────────────────────────────
-// Registrazione gratuita: https://www.tiingo.com → Dashboard → API
-// Free tier: ~500 req/ora, dati EOD per azioni/ETF globali
-
-export const TIINGO_API_KEY = 'YOUR_KEY_HERE'; // ← inserisci il tuo token Tiingo
-
-function hasKey(): boolean {
-  return TIINGO_API_KEY.length > 10 && TIINGO_API_KEY !== 'YOUR_KEY_HERE';
-}
-
-function tiingoHeaders(): Record<string, string> {
-  return {
-    Authorization: `Token ${TIINGO_API_KEY}`,
-    'Content-Type': 'application/json',
-  };
 }
 
 // ── Fetch with timeout ────────────────────────────────────────────────────────
@@ -57,111 +40,58 @@ async function fetchWithTimeout(
   }
 }
 
-function isoDateDaysAgo(days: number): string {
-  return new Date(Date.now() - days * 24 * 60 * 60 * 1000)
-    .toISOString()
-    .split('T')[0];
-}
+// ── Yahoo Finance v8/chart ────────────────────────────────────────────────────
+// Endpoint diretto, senza crumb. Funziona per azioni e ETF su qualsiasi borsa
+// (SWDA.MI, VWCE.DE, AAPL, ENI.MI, ecc.) dall'HTTP client nativo di React Native.
 
-function tiingoAssetType(raw: string): SearchResult['type'] {
-  const s = (raw ?? '').toLowerCase();
-  if (s === 'etf') return 'etf';
-  if (s === 'bond' || s === 'fixed income') return 'bond';
-  if (s === 'mutual fund') return 'etf';
+const YF_UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148';
+
+function yahooAssetType(instrumentType: string): Asset['type'] {
+  const s = (instrumentType ?? '').toUpperCase();
+  if (s === 'ETF' || s === 'MUTUALFUND') return 'etf';
+  if (s === 'BOND') return 'bond';
   return 'stock';
 }
 
-// ── Tiingo Search ─────────────────────────────────────────────────────────────
-// Endpoint: GET /tiingo/utilities/search?query={q}&limit=10
-// Ritorna un array di { ticker, name, assetType, countryCode, ... }
-// Copre azioni USA + molti mercati internazionali (incluse borse europee)
-
-export async function searchTiingo(query: string): Promise<SearchResult[]> {
-  if (!query.trim() || !hasKey()) return [];
-  try {
-    const url = `https://api.tiingo.com/tiingo/utilities/search?query=${encodeURIComponent(query)}&limit=10`;
-    const res = await fetchWithTimeout(url, { headers: tiingoHeaders() }, 8000);
-    if (!res.ok) return [];
-    const json = (await res.json()) as Record<string, unknown>[];
-    return json
-      .filter(item => item.ticker)
-      .map(item => ({
-        id: (item.ticker as string).toUpperCase(),
-        name: (item.name as string) ?? (item.ticker as string),
-        ticker: (item.ticker as string).toUpperCase(),
-        type: tiingoAssetType((item.assetType as string) ?? ''),
-        exchange: (item.countryCode as string | undefined),
-        source: 'tiingo' as const,
-      }));
-  } catch {
-    return [];
-  }
-}
-
-// ── Tiingo Asset Fetch ────────────────────────────────────────────────────────
-// Cerca nome+tipo via utilities/search, poi scarica i prezzi giornalieri
-// per costruire sparkline (ultimi 7 trading day) e prezzo corrente
-
-export async function fetchTiingoAsset(symbol: string): Promise<FetchedAsset> {
-  if (!hasKey()) throw new Error('Tiingo API key non configurato');
-
-  const ticker = symbol.toLowerCase();
-  const startDate = isoDateDaysAgo(14); // 14 giorni per coprire weekend/festivi
-
-  // Meta (nome + tipo) e prezzi in parallelo
-  const [searchRes, pricesRes] = await Promise.all([
-    fetchWithTimeout(
-      `https://api.tiingo.com/tiingo/utilities/search?query=${encodeURIComponent(symbol)}&limit=5`,
-      { headers: tiingoHeaders() },
-      6000
-    ).catch(() => null),
-    fetchWithTimeout(
-      `https://api.tiingo.com/tiingo/daily/${encodeURIComponent(ticker)}/prices?startDate=${startDate}`,
-      { headers: tiingoHeaders() },
-      10000
-    ),
-  ]);
-
-  if (!pricesRes.ok) {
-    throw new Error(`Tiingo ${pricesRes.status} per ${symbol}`);
-  }
-
-  // Estrai nome e tipo dal risultato di ricerca più preciso
-  let name = symbol.toUpperCase();
-  let type: Asset['type'] = 'stock';
-  if (searchRes?.ok) {
-    const results = (await searchRes.json()) as Record<string, unknown>[];
-    const exact = results.find(
-      r => ((r.ticker as string) ?? '').toLowerCase() === ticker
-    ) ?? results[0];
-    if (exact) {
-      name = (exact.name as string) ?? name;
-      type = tiingoAssetType((exact.assetType as string) ?? '');
-    }
-  }
-
-  // Sparkline: ultimi 7 prezzi di chiusura adjusted
-  const prices = (await pricesRes.json()) as Record<string, unknown>[];
-  const sparkline = prices
-    .map(p => (p.adjClose ?? p.close) as number)
-    .filter((v): v is number => typeof v === 'number' && !isNaN(v))
-    .slice(-7);
-
-  const currentPrice = sparkline.length > 0 ? sparkline[sparkline.length - 1] : 0;
-
-  return { name, ticker: symbol.toUpperCase(), type, currentPrice, sparkline };
-}
-
 export async function lookupTickerDirect(ticker: string): Promise<FetchedAsset | null> {
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?interval=1d&range=14d`;
+  console.log('[Yahoo] chart →', url);
   try {
-    return await fetchTiingoAsset(ticker);
-  } catch {
+    const res = await fetchWithTimeout(url, {
+      headers: { 'User-Agent': YF_UA, 'Accept': 'application/json' },
+    }, 10000);
+    console.log('[Yahoo] status:', res.status);
+    if (!res.ok) {
+      console.warn('[Yahoo] errore:', await res.text().catch(() => ''));
+      return null;
+    }
+    const json = await res.json() as Record<string, unknown>;
+    const result = ((json?.chart as Record<string, unknown>)
+      ?.result as Record<string, unknown>[])?.[0];
+    if (!result) return null;
+
+    const meta = (result.meta as Record<string, unknown>) ?? {};
+    const currentPrice = (meta.regularMarketPrice ?? meta.chartPreviousClose ?? 0) as number;
+    const closes = (((result.indicators as Record<string, unknown>)
+      ?.quote as Record<string, unknown>[])?.[0]
+      ?.close as (number | null)[]) ?? [];
+    const sparkline = closes
+      .filter((v): v is number => typeof v === 'number' && !isNaN(v))
+      .slice(-7);
+
+    console.log('[Yahoo] price:', currentPrice, 'sparkline pts:', sparkline.length);
+    return {
+      name: (meta.longName ?? meta.shortName ?? ticker) as string,
+      ticker: ticker.toUpperCase(),
+      type: yahooAssetType((meta.instrumentType as string) ?? ''),
+      currentPrice,
+      sparkline,
+    };
+  } catch (e) {
+    console.warn('[Yahoo] eccezione:', e);
     return null;
   }
 }
-
-/** No-op — Tiingo non richiede sessione/crumb. Mantenuto per compatibilità. */
-export async function warmupYahooSession(): Promise<void> {}
 
 // ── CoinGecko ─────────────────────────────────────────────────────────────────
 

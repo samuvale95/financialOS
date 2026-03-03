@@ -221,8 +221,13 @@ function FieldRow({
   multiline?: boolean;
 }) {
   return (
-    <View style={styles.fieldRow}>
-      <Ionicons name={icon as any} size={18} color={Colors.text.muted} />
+    <View style={[styles.fieldRow, multiline && styles.fieldRowMultiline]}>
+      <Ionicons
+        name={icon as any}
+        size={18}
+        color={Colors.text.muted}
+        style={multiline ? { marginTop: 2 } : undefined}
+      />
       <TextInput
         style={[styles.fieldInput, multiline && { minHeight: 60, textAlignVertical: 'top' }]}
         placeholder={placeholder}
@@ -248,12 +253,14 @@ const styles = StyleSheet.create({
   },
   title: { ...Typography.h3, color: Colors.text.primary },
   closeBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     backgroundColor: Colors.bg.card,
     justifyContent: 'center',
     alignItems: 'center',
+    borderWidth: 1,
+    borderColor: Colors.border.default,
   },
   scroll: { flex: 1 },
   content: { paddingHorizontal: 16, paddingTop: 20, gap: 24 },
@@ -341,7 +348,7 @@ const styles = StyleSheet.create({
   },
   fieldRow: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
+    alignItems: 'center',
     gap: 12,
     paddingVertical: 14,
   },
@@ -350,6 +357,7 @@ const styles = StyleSheet.create({
     ...Typography.bodyMedium,
     color: Colors.text.primary,
   },
+  fieldRowMultiline: { alignItems: 'flex-start' },
   fieldDivider: { height: 1, backgroundColor: Colors.border.subtle },
   submitBtn: {
     flexDirection: 'row',

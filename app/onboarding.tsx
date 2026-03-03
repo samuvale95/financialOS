@@ -1,243 +1,394 @@
-import React, { useState, useMemo, useRef, useCallback } from 'react';
+import React, { useState, useCallback, useRef, useMemo } from 'react';
 import {
   View,
   Text,
   StyleSheet,
-  TouchableOpacity,
   ScrollView,
+  TouchableOpacity,
   TextInput,
+  Alert,
   ActivityIndicator,
   KeyboardAvoidingView,
+  Keyboard,
   Platform,
-  Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
+import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
-import { Colors, Typography, Radius, Spacing, Gradients } from '../constants/theme';
-import { ITALIAN_BANKS } from '../constants/italianBanks';
-import type { ItalianBank } from '../constants/italianBanks';
-import { CATEGORIES } from '../constants/categories';
+import { Colors, Typography, Radius, Spacing } from '../constants/theme';
 import { useData } from '../contexts/DataContext';
 import { saveOnboardingData } from '../utils/storage';
-import { calculateBudgets, getSavingsPotential } from '../utils/budgetCalculator';
+import { calculateBudgets } from '../utils/budgetCalculator';
+import type { BudgetContext } from '../utils/budgetCalculator';
 import {
   searchCoinGecko, fetchCoinGeckoAsset,
-  searchTiingo, lookupTickerDirect, nextAssetColor,
+  lookupTickerDirect, nextAssetColor,
 } from '../utils/financialApi';
-import type { SearchResult } from '../utils/financialApi';
 import { searchLocalAssets, looksLikeTicker } from '../constants/popularAssets';
 import type { LocalAsset } from '../constants/popularAssets';
 import { parseCSV } from '../utils/parsers';
 import { parseExcel } from '../utils/excelParser';
-import type { BankAccount, OnboardingGoalId, EffortLevel, IncomeSource, IncomeType, StoredBudget, Asset } from '../types';
+import { ITALIAN_BANKS } from '../constants/italianBanks';
+import type { ItalianBank } from '../constants/italianBanks';
+import { CATEGORIES } from '../constants/categories';
+import type {
+  BankAccount, OnboardingGoalId, EffortLevel, IncomeSource, IncomeType,
+  StoredBudget, Asset, FamilyStatus, HousingType, WorkType, IncomeStability,
+} from '../types';
 import type { Transaction } from '../types';
 
 // ── Local types ───────────────────────────────────────────────────────────────
 
-interface PendingAccount {
-  bankId: string; bankName: string; accountLabel: string; balance: number;
-}
-
+interface PendingAccount { bankId: string; bankName: string; accountLabel: string; balance: number; }
 interface PendingAsset extends Omit<Asset, 'id'> {}
-
-interface ImportResult {
-  transactions: Omit<Transaction, 'id'>[];
-  bankName: string;
+interface ImportResult { transactions: Omit<Transaction, 'id'>[]; bankName: string; }
+interface CategoryInsight {
+  id: string; name: string; icon: string;
+  monthlySpent: number; budget: number; percentOfIncome: number;
+  status: 'ok' | 'warning' | 'over';
 }
 
 interface WizardState {
   step: number;
-  // Step 1 – Conti
-  accounts: PendingAccount[];
-  // Step 2 – Investimenti
-  assets: PendingAsset[];
-  // Step 3 – Entrate
+  // Step 1: Chi sei
+  userName: string;
+  birthYear: string;
+  familyStatus: FamilyStatus | null;
+  householdSize: number;
+  dependents: number;
+  // Step 2: Dove vivi
+  region: string | null;
+  housingType: HousingType | null;
+  housingCost: string;
+  // Step 3: Lavoro
+  workType: WorkType | null;
+  workSector: string | null;
+  incomeStability: IncomeStability | null;
+  // Step 4: Entrate
   incomeSources: IncomeSource[];
-  // Step 4 – Obiettivi & Impegno
+  // Step 5: Conti bancari
+  accounts: PendingAccount[];
+  // Step 6: Crypto
+  hasCrypto: boolean | null;
+  cryptoAssets: PendingAsset[];
+  // Step 7: Investimenti
+  hasInvestments: boolean | null;
+  assets: PendingAsset[];
+  // Step 7: Obiettivi & Impegno
   mainGoal: OnboardingGoalId | null;
   effortLevel: EffortLevel | null;
-  // Step 5 – Import
+  // Step 8: Importa
   imported: ImportResult | null;
-  // Step 6 – Budget edits (keyed by category)
+  // Step 9: Budget edits
   budgetEdits: Record<string, string>;
 }
 
+const INIT_STATE: WizardState = {
+  step: 0, userName: '', birthYear: '',
+  familyStatus: null, householdSize: 1, dependents: 0,
+  region: null, housingType: null, housingCost: '',
+  workType: null, workSector: null, incomeStability: null,
+  incomeSources: [], accounts: [], hasCrypto: null, cryptoAssets: [], hasInvestments: null, assets: [],
+  mainGoal: null, effortLevel: null, imported: null, budgetEdits: {},
+};
+
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const TOTAL_STEPS = 6;
+const PROGRESS_STEPS = 9; // steps 1–9 show progress bar
 
-const GOAL_OPTIONS: { id: OnboardingGoalId; label: string; icon: string; desc: string }[] = [
-  { id: 'risparmio',  label: 'Risparmio',  icon: 'trending-up',      desc: 'Costruire una riserva solida' },
-  { id: 'casa',       label: 'Casa',        icon: 'home',             desc: 'Acquistare o ristrutturare' },
-  { id: 'pensione',   label: 'Pensione',    icon: 'time',             desc: 'Pianificare il futuro' },
-  { id: 'emergenza',  label: 'Emergenza',   icon: 'shield-checkmark', desc: 'Cuscinetto di sicurezza' },
-  { id: 'viaggio',    label: 'Viaggio',     icon: 'airplane',         desc: 'Esperienze e avventure' },
-  { id: 'istruzione', label: 'Istruzione',  icon: 'school',           desc: 'Investire nella formazione' },
+const ITALIAN_REGIONS = [
+  'Abruzzo', 'Basilicata', 'Calabria', 'Campania', 'Emilia-Romagna',
+  'Friuli-Venezia Giulia', 'Lazio', 'Liguria', 'Lombardia', 'Marche',
+  'Molise', 'Piemonte', 'Puglia', 'Sardegna', 'Sicilia', 'Toscana',
+  'Trentino-Alto Adige', 'Umbria', "Valle d'Aosta", 'Veneto',
 ];
 
-const EFFORT_OPTIONS: { id: EffortLevel; emoji: string; label: string; desc: string; savingHint: string }[] = [
-  { id: 'leggero',  emoji: '🌱', label: 'Leggero',  desc: 'Piccoli aggiustamenti',          savingHint: '~3–5% di risparmio' },
-  { id: 'moderato', emoji: '⚖️', label: 'Moderato', desc: 'Equilibrio vita e risparmio',    savingHint: '~15–20% di risparmio' },
-  { id: 'intenso',  emoji: '🚀', label: 'Intenso',  desc: 'Massima priorità al risparmio',  savingHint: '~30%+ di risparmio' },
+const WORK_SECTORS = [
+  'Tecnologia', 'Finanza & Banca', 'Sanità & Medicina', 'Istruzione',
+  'Commercio & Retail', 'Industria & Manifattura', 'Edilizia',
+  'Trasporti & Logistica', 'Turismo & Ristorazione', 'Servizi & Consulenza',
+  'Pubblica Amministrazione', 'Arte & Media', 'Agricoltura', 'Altro',
 ];
 
-const INCOME_TYPES: { id: IncomeType; label: string; icon: string }[] = [
-  { id: 'salary',    label: 'Stipendio',             icon: 'briefcase' },
-  { id: 'freelance', label: 'Freelance / Consulenze', icon: 'laptop' },
-  { id: 'rent',      label: 'Affitti',               icon: 'home' },
-  { id: 'dividends', label: 'Dividendi / Rendite',   icon: 'trending-up' },
-  { id: 'pension',   label: 'Pensione',              icon: 'time' },
-  { id: 'other',     label: 'Altro reddito',         icon: 'cash' },
+const FAMILY_STATUS_OPTIONS: { id: FamilyStatus; label: string }[] = [
+  { id: 'single', label: 'Single' },
+  { id: 'partner', label: 'Convivente' },
+  { id: 'married', label: 'Sposato/a' },
+  { id: 'separated', label: 'Separato/a' },
+  { id: 'widowed', label: 'Vedovo/a' },
+];
+
+const HOUSING_OPTIONS: { id: HousingType; label: string; emoji: string; desc: string }[] = [
+  { id: 'owner', label: 'Proprietario/a', emoji: '🏠', desc: 'Casa di proprietà' },
+  { id: 'renter', label: 'In affitto', emoji: '🔑', desc: 'Pago affitto mensile' },
+  { id: 'family', label: 'Con la famiglia', emoji: '👨‍👩‍👦', desc: 'Vivo con i genitori/parenti' },
+  { id: 'other', label: 'Altro', emoji: '🏢', desc: 'Altra situazione' },
+];
+
+const WORK_TYPE_OPTIONS: { id: WorkType; label: string; emoji: string }[] = [
+  { id: 'employee', label: 'Dipendente', emoji: '👔' },
+  { id: 'freelance', label: 'Freelance', emoji: '💼' },
+  { id: 'entrepreneur', label: 'Imprenditore', emoji: '🏗' },
+  { id: 'retired', label: 'Pensionato/a', emoji: '🏖' },
+  { id: 'student', label: 'Studente', emoji: '📚' },
+  { id: 'other', label: 'Altro', emoji: '❓' },
+];
+
+const STABILITY_OPTIONS: { id: IncomeStability; label: string; emoji: string; desc: string }[] = [
+  { id: 'stable', label: 'Fisso mensile', emoji: '📅', desc: 'Stipendio sempre uguale' },
+  { id: 'variable', label: 'Variabile', emoji: '📊', desc: 'Cambia di mese in mese' },
+  { id: 'seasonal', label: 'Stagionale', emoji: '🌊', desc: 'Concentrato in certi periodi' },
+];
+
+const INCOME_TYPES: { id: IncomeType; label: string; emoji: string }[] = [
+  { id: 'salary', label: 'Stipendio', emoji: '💰' },
+  { id: 'freelance', label: 'Freelance/P.IVA', emoji: '💼' },
+  { id: 'rent', label: 'Affitti', emoji: '🏠' },
+  { id: 'dividends', label: 'Dividendi', emoji: '📈' },
+  { id: 'pension', label: 'Pensione', emoji: '🏖' },
+  { id: 'other', label: 'Altro', emoji: '➕' },
+];
+
+const GOAL_OPTIONS: { id: OnboardingGoalId; label: string; emoji: string; desc: string }[] = [
+  { id: 'risparmio', label: 'Risparmio', emoji: '💰', desc: 'Costruire un gruzzolo' },
+  { id: 'casa', label: 'Casa', emoji: '🏠', desc: 'Acquistare o ristrutturare' },
+  { id: 'pensione', label: 'Pensione', emoji: '🌅', desc: 'Prepararsi al futuro' },
+  { id: 'emergenza', label: 'Fondo emergenza', emoji: '🛡', desc: '3-6 mesi di spese' },
+  { id: 'viaggio', label: 'Viaggi', emoji: '✈️', desc: 'Finanziare esperienze' },
+  { id: 'istruzione', label: 'Istruzione', emoji: '🎓', desc: 'Formazione e crescita' },
+];
+
+const EFFORT_OPTIONS: { id: EffortLevel; label: string; emoji: string; desc: string; saving: string }[] = [
+  { id: 'leggero', label: 'Leggero', emoji: '😌', desc: 'Piccoli aggiustamenti senza rinunce', saving: '3–5%' },
+  { id: 'moderato', label: 'Moderato', emoji: '💪', desc: 'Equilibrio tra risparmio e qualità di vita', saving: '15–20%' },
+  { id: 'intenso', label: 'Intenso', emoji: '🔥', desc: 'Massimizzare il risparmio, obiettivo rapido', saving: '30%+' },
 ];
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function monthlyAmount(src: IncomeSource): number {
-  return src.frequency === 'annual' ? src.amount / 12 : src.amount;
+function monthlyAmount(s: IncomeSource): number {
+  return s.frequency === 'annual' ? s.amount / 12 : s.amount;
 }
-
 function totalMonthlyIncome(sources: IncomeSource[]): number {
-  return sources.reduce((s, src) => s + monthlyAmount(src), 0);
+  return sources.reduce((sum, s) => sum + monthlyAmount(s), 0);
+}
+function fmtEur(n: number): string {
+  return `€${Math.round(n).toLocaleString('it-IT')}`;
 }
 
-function totalNetWorth(accounts: PendingAccount[], assets: PendingAsset[]): number {
-  const accs = accounts.reduce((s, a) => s + a.balance, 0);
-  const port = assets.reduce((s, a) => s + a.quantity * a.currentPrice, 0);
-  return accs + port;
-}
-
-function computeScore(
-  income: number,
-  netWorth: number,
-  assets: PendingAsset[],
-  incomeSources: IncomeSource[],
-  goal: OnboardingGoalId | null,
-  effort: EffortLevel | null,
-  txCount: number
-): number {
-  let score = 0;
-
-  // Patrimonio – mesi di reddito coperti (0–30 pt)
-  if (income > 0) {
-    const months = netWorth / income;
-    if (months >= 12) score += 30;
-    else if (months >= 6) score += 22;
-    else if (months >= 3) score += 15;
-    else if (months >= 1) score += 8;
-    else if (months > 0) score += 3;
+function getCategoryInsights(
+  txs: Omit<Transaction, 'id'>[] | null,
+  budgets: StoredBudget[],
+  income: number
+): CategoryInsight[] {
+  if (!txs || txs.length === 0 || income <= 0) return [];
+  const spentByCategory: Record<string, number> = {};
+  for (const tx of txs) {
+    if (tx.amount < 0) {
+      spentByCategory[tx.category] = (spentByCategory[tx.category] || 0) + Math.abs(tx.amount);
+    }
   }
+  const dates = txs.map(t => t.date).sort();
+  const first = new Date(dates[0]);
+  const last = new Date(dates[dates.length - 1]);
+  const months = Math.max(1, Math.round((last.getTime() - first.getTime()) / (30 * 24 * 60 * 60 * 1000))) || 1;
 
-  // Investimenti (0–20 pt)
-  if (assets.length >= 3) score += 20;
-  else if (assets.length >= 1) score += 12;
-
-  // Diversificazione entrate (0–20 pt)
-  if (incomeSources.length >= 3) score += 20;
-  else if (incomeSources.length === 2) score += 12;
-  else if (incomeSources.length === 1) score += 5;
-
-  // Pianificazione – obiettivo + impegno (0–20 pt)
-  if (goal) score += 8;
-  if (effort === 'intenso') score += 12;
-  else if (effort === 'moderato') score += 8;
-  else if (effort === 'leggero') score += 4;
-
-  // Dati estratto conto (0–10 pt)
-  if (txCount > 50) score += 10;
-  else if (txCount > 10) score += 6;
-  else if (txCount > 0) score += 3;
-
-  return Math.min(100, Math.round(score));
+  return budgets
+    .map(b => {
+      const total = spentByCategory[b.category] || 0;
+      const monthly = total / months;
+      const cat = CATEGORIES[b.category];
+      return {
+        id: b.category,
+        name: cat?.label ?? b.category,
+        icon: cat?.icon ?? '💰',
+        monthlySpent: Math.round(monthly),
+        budget: b.limit,
+        percentOfIncome: Math.round((monthly / income) * 100),
+        status: monthly > b.limit * 1.2 ? 'over' as const : monthly > b.limit * 0.85 ? 'warning' as const : 'ok' as const,
+      };
+    })
+    .filter(i => i.monthlySpent > 0)
+    .sort((a, b) => b.monthlySpent - a.monthlySpent);
 }
 
-function scoreLabel(score: number): { label: string; color: string } {
-  if (score >= 80) return { label: 'Ottimo',           color: '#00D68F' };
-  if (score >= 60) return { label: 'Solido',           color: '#00D68F' };
-  if (score >= 40) return { label: 'In crescita',      color: '#FFB347' };
-  if (score >= 20) return { label: 'Da rafforzare',    color: '#FF9500' };
-  return                  { label: 'Punto di partenza', color: '#FF6B6B' };
+function computeScore(state: WizardState, budgets: StoredBudget[]): number {
+  let score = 35;
+  const income = totalMonthlyIncome(state.incomeSources);
+  const txs = state.imported?.transactions ?? null;
+
+  if (txs && txs.length > 0 && income > 0) {
+    const dates = txs.map(t => t.date).sort();
+    const months = Math.max(1, Math.round((new Date(dates[dates.length - 1]).getTime() - new Date(dates[0]).getTime()) / (30 * 24 * 60 * 60 * 1000))) || 1;
+    const monthlyExp = txs.filter(t => t.amount < 0).reduce((s, t) => s + Math.abs(t.amount), 0) / months;
+    const savingsRate = income > 0 ? (income - monthlyExp) / income : 0;
+    if (savingsRate >= 0.25) score += 25;
+    else if (savingsRate >= 0.15) score += 18;
+    else if (savingsRate >= 0.05) score += 10;
+    else if (savingsRate >= 0) score += 3;
+    else score -= 8;
+
+    const insights = getCategoryInsights(txs, budgets, income);
+    score += insights.filter(i => i.status === 'ok').length * 2;
+    score -= insights.filter(i => i.status === 'over').length * 4;
+  } else {
+    score += 5;
+  }
+  const allAssets = [...state.assets, ...state.cryptoAssets];
+  if (allAssets.length > 0) {
+    score += 10;
+    const types = new Set(allAssets.map(a => a.type));
+    if (types.size >= 2) score += 5;
+  }
+  if (state.incomeSources.length >= 2) score += 10;
+  else if (state.incomeSources.length === 1) score += 5;
+  if (state.accounts.length > 0) score += 5;
+  if (state.mainGoal && state.effortLevel) score += 5;
+  return Math.max(0, Math.min(100, score));
 }
 
-function generateTips(
-  income: number,
-  netWorth: number,
-  assets: PendingAsset[],
-  incomeSources: IncomeSource[],
-  goal: OnboardingGoalId | null,
-  effort: EffortLevel | null,
-  score: number
-): string[] {
+function scoreLabel(score: number): { label: string; color: string; description: string } {
+  if (score >= 80) return { label: 'Eccellente', color: '#00D68F', description: 'Gestione finanziaria ottimale' };
+  if (score >= 65) return { label: 'Buono', color: '#4FC3F7', description: 'Buona base, margini di crescita' };
+  if (score >= 50) return { label: 'Nella media', color: '#FFB347', description: 'Alcune aree da migliorare' };
+  if (score >= 35) return { label: 'Da migliorare', color: '#FF9500', description: 'Rivedere le abitudini di spesa' };
+  return { label: 'Critico', color: '#FF6B6B', description: 'Attenzione urgente alle finanze' };
+}
+
+function generateTips(insights: CategoryInsight[], state: WizardState): string[] {
   const tips: string[] = [];
-  const months = income > 0 ? netWorth / income : 0;
-
-  if (months < 3) {
-    tips.push('Priorità #1: costruisci un fondo di emergenza pari a 3–6 mesi di spese, tenendolo in un conto separato.');
+  const income = totalMonthlyIncome(state.incomeSources);
+  const overCategories = insights.filter(i => i.status === 'over').slice(0, 2);
+  for (const cat of overCategories) {
+    tips.push(`${cat.name}: spendi ${fmtEur(cat.monthlySpent)}/mese (${cat.percentOfIncome}% del reddito). Budget consigliato: ${fmtEur(cat.budget)}/mese.`);
   }
-  if (assets.length === 0) {
-    tips.push('Inizia a investire anche piccole somme: un ETF globale come VWCE offre diversificazione immediata a costi bassi.');
+  if (state.assets.length === 0 && tips.length < 3) {
+    tips.push('Considera di iniziare a investire. ETF su indici globali come VWCE permettono di partire con piccole somme mensili.');
   }
-  if (incomeSources.length < 2) {
-    tips.push('Una seconda fonte di reddito — anche piccola — riduce il rischio finanziario e accelera i tuoi obiettivi.');
+  if (state.incomeSources.length === 1 && tips.length < 3) {
+    tips.push('Una sola fonte di reddito è rischiosa. Valuta dividendi, affitti o attività freelance come reddito aggiuntivo.');
   }
-  if (goal === 'risparmio' && effort === 'leggero') {
-    tips.push('Per raggiungere il tuo obiettivo di risparmio più velocemente, considera di passare all\'impegno "Moderato".');
+  const totalBalance = state.accounts.reduce((s, a) => s + a.balance, 0);
+  if (income > 0 && totalBalance < income * 3 && tips.length < 3) {
+    const months = Math.round(totalBalance / income);
+    tips.push(`Il tuo fondo emergenza copre circa ${months} ${months === 1 ? 'mese' : 'mesi'}. L'obiettivo è 3–6 mesi di spese.`);
   }
-  if (effort === 'intenso') {
-    tips.push('Ottima ambizione! Automizza i risparmi subito dopo lo stipendio: trasferimento automatico su conto dedicato.');
+  if (tips.length === 0) {
+    tips.push('Importa il tuo estratto conto dalla schermata "Importa" per ricevere analisi dettagliate sulle spese reali.');
+    tips.push('Monitora settimanalmente le tue spese per categoria: piccole variazioni quotidiane fanno grande differenza.');
+    tips.push('Automatizza i risparmi: imposta un bonifico automatico il giorno dello stipendio verso un conto separato.');
   }
-  if (months >= 6 && assets.length > 0) {
-    tips.push('Hai una base solida. Considera di aumentare progressivamente la quota investita ogni mese (es. +€50/mese).');
-  }
-  if (score >= 60 && assets.length > 0) {
-    tips.push('Stai andando bene. Rivedi il portafoglio ogni 6 mesi per ribilanciare e mantenere la tua asset allocation target.');
-  }
-
   return tips.slice(0, 3);
 }
 
-// ── Shared UI ─────────────────────────────────────────────────────────────────
+function isStepValid(state: WizardState): boolean {
+  switch (state.step) {
+    case 0: return true;
+    case 1: return state.familyStatus !== null;
+    case 2: return state.housingType !== null;
+    case 3: return state.workType !== null && state.incomeStability !== null;
+    case 4: return state.incomeSources.length > 0;
+    case 5: return true;
+    case 6: return state.hasCrypto !== null;
+    case 7: return state.hasInvestments !== null;
+    case 8: return state.mainGoal !== null && state.effortLevel !== null;
+    case 9: return true;
+    case 10: return true;
+    default: return true;
+  }
+}
 
-function ProgressBar({ current, total }: { current: number; total: number }) {
+// ── Shared UI components ──────────────────────────────────────────────────────
+
+function ProgressBar({ step, total }: { step: number; total: number }) {
+  const pct = Math.min(1, step / total);
   return (
-    <View style={s.progressRow}>
-      <View style={s.progressTrack}>
-        <View style={[s.progressFill, { width: `${(current / total) * 100}%` }]} />
+    <View style={ui.progressContainer}>
+      <View style={ui.progressTrack}>
+        <View style={[ui.progressFill, { width: `${pct * 100}%` as `${number}%` }]} />
       </View>
-      <Text style={s.progressLabel}>{current}/{total}</Text>
+      <Text style={ui.progressLabel}>{step} di {total}</Text>
     </View>
   );
 }
 
-function StepHeader({ title, subtitle }: { title: string; subtitle?: string }) {
+function ChipRow<T extends string>({
+  options, value, onChange,
+}: {
+  options: { id: T; label: string }[];
+  value: T | null;
+  onChange: (v: T) => void;
+}) {
   return (
-    <View style={{ gap: 4 }}>
-      <Text style={s.stepTitle}>{title}</Text>
-      {subtitle ? <Text style={s.stepSubtitle}>{subtitle}</Text> : null}
+    <View style={ui.chipRow}>
+      {options.map(o => (
+        <TouchableOpacity
+          key={o.id}
+          style={[ui.chip, value === o.id && ui.chipActive]}
+          onPress={() => onChange(o.id)}
+          activeOpacity={0.7}
+        >
+          <Text style={[ui.chipText, value === o.id && ui.chipTextActive]}>{o.label}</Text>
+        </TouchableOpacity>
+      ))}
     </View>
   );
 }
 
-function PrimaryBtn({ label, onPress, disabled, fullWidth }: { label: string; onPress: () => void; disabled?: boolean; fullWidth?: boolean }) {
+function Stepper({
+  label, sublabel, value, onChange, min = 0, max = 10,
+}: {
+  label: string; sublabel?: string; value: number; onChange: (v: number) => void; min?: number; max?: number;
+}) {
+  return (
+    <View style={ui.stepperRow}>
+      <View style={{ flex: 1 }}>
+        <Text style={ui.stepperLabel}>{label}</Text>
+        {sublabel && <Text style={ui.stepperSublabel}>{sublabel}</Text>}
+      </View>
+      <View style={ui.stepperControls}>
+        <TouchableOpacity
+          style={[ui.stepperBtn, value <= min && ui.stepperBtnDisabled]}
+          onPress={() => onChange(Math.max(min, value - 1))}
+          activeOpacity={0.7}
+          disabled={value <= min}
+        >
+          <Ionicons name="remove" size={18} color={value <= min ? Colors.text.muted : Colors.text.primary} />
+        </TouchableOpacity>
+        <Text style={ui.stepperValue}>{value}</Text>
+        <TouchableOpacity
+          style={[ui.stepperBtn, value >= max && ui.stepperBtnDisabled]}
+          onPress={() => onChange(Math.min(max, value + 1))}
+          activeOpacity={0.7}
+          disabled={value >= max}
+        >
+          <Ionicons name="add" size={18} color={value >= max ? Colors.text.muted : Colors.text.primary} />
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+}
+
+function PrimaryBtn({ label, onPress, disabled = false }: { label: string; onPress: () => void; disabled?: boolean }) {
   return (
     <TouchableOpacity
-      style={[s.primaryBtn, fullWidth && s.fullWidth, disabled && s.btnDisabled]}
+      style={[ui.primaryBtn, disabled && ui.primaryBtnDisabled]}
       onPress={onPress}
       disabled={disabled}
-      activeOpacity={0.82}
+      activeOpacity={0.85}
     >
-      <Text style={s.primaryBtnText}>{label}</Text>
+      <Text style={ui.primaryBtnText}>{label}</Text>
     </TouchableOpacity>
   );
 }
 
 function GhostBtn({ label, onPress }: { label: string; onPress: () => void }) {
   return (
-    <TouchableOpacity style={s.ghostBtn} onPress={onPress} activeOpacity={0.7}>
-      <Text style={s.ghostBtnText}>{label}</Text>
+    <TouchableOpacity style={ui.ghostBtn} onPress={onPress} activeOpacity={0.7}>
+      <Text style={ui.ghostBtnText}>{label}</Text>
     </TouchableOpacity>
   );
 }
@@ -245,83 +396,94 @@ function GhostBtn({ label, onPress }: { label: string; onPress: () => void }) {
 // ── BankPickerForm ────────────────────────────────────────────────────────────
 
 function BankPickerForm({ onConfirm, onCancel }: {
-  onConfirm: (acc: PendingAccount) => void;
+  onConfirm: (acc: Omit<BankAccount, 'id'>) => void;
   onCancel: () => void;
 }) {
   const [bankQuery, setBankQuery] = useState('');
-  const [bank, setBank] = useState<ItalianBank | null>(null);
-  const [label, setLabel] = useState('Conto corrente');
-  const [balStr, setBalStr] = useState('');
-
-  const filtered = useMemo(() => {
+  const [selectedBank, setSelectedBank] = useState<ItalianBank | null>(null);
+  const [label, setLabel] = useState('');
+  const [balanceStr, setBalanceStr] = useState('');
+  const filteredBanks = useMemo(() => {
+    if (!bankQuery) return ITALIAN_BANKS.slice(0, 8);
     const q = bankQuery.toLowerCase();
     return ITALIAN_BANKS.filter(b =>
-      !q || b.name.toLowerCase().includes(q) || b.shortName.toLowerCase().includes(q)
+      b.name.toLowerCase().includes(q) || b.shortName.toLowerCase().includes(q)
     ).slice(0, 8);
   }, [bankQuery]);
 
-  const canConfirm = bank !== null && label.trim().length > 0 && balStr.length > 0;
+  const canConfirm = selectedBank !== null && label.trim().length > 0 && balanceStr.length > 0;
 
   return (
-    <View style={s.inlineForm}>
-      {!bank ? (
+    <View style={ui.pickerForm}>
+      {!selectedBank ? (
         <>
           <TextInput
-            style={s.textInput}
+            style={ui.textInput}
             placeholder="Cerca la tua banca…"
             placeholderTextColor={Colors.text.muted}
             value={bankQuery}
             onChangeText={setBankQuery}
             autoFocus
           />
-          <ScrollView style={{ maxHeight: 210 }} nestedScrollEnabled>
-            {filtered.map(b => (
-              <TouchableOpacity key={b.id} style={s.listRow} onPress={() => setBank(b)} activeOpacity={0.7}>
-                <View style={[s.colorBadge, { backgroundColor: b.color + '33' }]}>
-                  <Text style={[s.colorBadgeText, { color: b.color }]}>{b.shortName[0]}</Text>
+          <ScrollView style={{ maxHeight: 200 }} nestedScrollEnabled keyboardShouldPersistTaps="handled">
+            {filteredBanks.map(b => (
+              <TouchableOpacity
+                key={b.id}
+                style={ui.bankRow}
+                onPress={() => setSelectedBank(b)}
+                activeOpacity={0.7}
+              >
+                <View style={[ui.bankBadge, { backgroundColor: b.color + '33' }]}>
+                  <Text style={[ui.bankBadgeText, { color: b.color }]}>{b.shortName[0]}</Text>
                 </View>
-                <Text style={s.listRowName}>{b.name}</Text>
+                <Text style={ui.bankRowName}>{b.name}</Text>
               </TouchableOpacity>
             ))}
           </ScrollView>
         </>
       ) : (
         <>
-          <View style={s.selectedRow}>
-            <View style={[s.colorBadge, { backgroundColor: bank.color + '33' }]}>
-              <Text style={[s.colorBadgeText, { color: bank.color }]}>{bank.shortName[0]}</Text>
+          <View style={ui.bankSelectedRow}>
+            <View style={[ui.bankBadge, { backgroundColor: selectedBank.color + '33' }]}>
+              <Text style={[ui.bankBadgeText, { color: selectedBank.color }]}>{selectedBank.shortName[0]}</Text>
             </View>
-            <Text style={[s.listRowName, { flex: 1 }]}>{bank.name}</Text>
-            <TouchableOpacity onPress={() => setBank(null)}>
+            <Text style={[ui.bankRowName, { flex: 1 }]}>{selectedBank.name}</Text>
+            <TouchableOpacity onPress={() => setSelectedBank(null)}>
               <Ionicons name="close-circle" size={20} color={Colors.text.muted} />
             </TouchableOpacity>
           </View>
           <TextInput
-            style={s.textInput}
-            placeholder="Label (es. Conto corrente, Conto stipendio…)"
+            style={ui.textInput}
+            placeholder='Label (es. "Conto corrente")'
             placeholderTextColor={Colors.text.muted}
             value={label}
             onChangeText={setLabel}
           />
           <TextInput
-            style={s.textInput}
+            style={ui.textInput}
             placeholder="Saldo attuale (€)"
             placeholderTextColor={Colors.text.muted}
-            value={balStr}
-            onChangeText={setBalStr}
+            value={balanceStr}
+            onChangeText={setBalanceStr}
             keyboardType="decimal-pad"
           />
         </>
       )}
-      <View style={s.rowActions}>
+      <View style={ui.pickerActions}>
         <GhostBtn label="Annulla" onPress={onCancel} />
-        {bank && (
+        {selectedBank && (
           <PrimaryBtn
-            label="Conferma"
-            onPress={() => onConfirm({
-              bankId: bank.id, bankName: bank.name, accountLabel: label.trim(),
-              balance: parseFloat(balStr.replace(',', '.')) || 0,
-            })}
+            label="Aggiungi"
+            onPress={() => {
+              if (!selectedBank || !canConfirm) return;
+              Keyboard.dismiss();
+              onConfirm({
+                bankId: selectedBank.id, bankName: selectedBank.name,
+                accountLabel: label.trim(),
+                balance: parseFloat(balanceStr.replace(',', '.')) || 0,
+                lastUpdated: new Date().toISOString(),
+              });
+            }}
             disabled={!canConfirm}
           />
         )}
@@ -331,32 +493,24 @@ function BankPickerForm({ onConfirm, onCancel }: {
 }
 
 // ── AssetSearch ───────────────────────────────────────────────────────────────
-// Strategy:
-//   1. Local popular-assets DB → instant results, no API (covers 90% of cases)
-//   2. Direct ticker lookup → type "SWDA.MI" → "Carica SWDA.MI" button (bypasses broken search API)
-//   3. CoinGecko search → crypto only, reliable API
-//   4. Yahoo Finance search → stocks/ETF, best-effort (may fail due to crumb)
-//   5. Manual entry → always available as final fallback
 
-type AssetSearchState =
+type AssetSearchMode =
   | { mode: 'search' }
-  | { mode: 'qty'; result: LocalAsset | SearchResult }
-  | { mode: 'manual' }
-  | { mode: 'directLoading'; ticker: string };
+  | { mode: 'qty'; result: LocalAsset }
+  | { mode: 'directLoading'; ticker: string }
+  | { mode: 'manual' };
 
 function AssetSearch({ assetType, onAdd }: {
-  assetType: 'crypto' | 'investment';
-  onAdd: (a: PendingAsset) => void;
+  assetType: 'investment' | 'crypto';
+  onAdd: (a: Omit<Asset, 'id'>) => void;
 }) {
   const [query, setQuery] = useState('');
   const [localResults, setLocalResults] = useState<LocalAsset[]>(
     assetType === 'investment' ? searchLocalAssets('') : []
   );
-  const [yahooResults, setYahooResults] = useState<SearchResult[]>([]);
-  const [yahooSearching, setYahooSearching] = useState(false);
-  const [cryptoResults, setCryptoResults] = useState<SearchResult[]>([]);
+  const [cryptoResults, setCryptoResults] = useState<{ id: string; name: string; ticker: string }[]>([]);
   const [cryptoSearching, setCryptoSearching] = useState(false);
-  const [uiState, setUiState] = useState<AssetSearchState>({ mode: 'search' });
+  const [uiState, setUiState] = useState<AssetSearchMode>({ mode: 'search' });
   const [qty, setQty] = useState('');
   const [manualName, setManualName] = useState('');
   const [manualTicker, setManualTicker] = useState('');
@@ -366,30 +520,14 @@ function AssetSearch({ assetType, onAdd }: {
   const handleQueryChange = useCallback((text: string) => {
     setQuery(text);
     if (debRef.current) clearTimeout(debRef.current);
-
     if (assetType === 'investment') {
-      // Local search is instant
       setLocalResults(searchLocalAssets(text));
-      // Yahoo search is deferred + best-effort
-      if (text.trim().length > 1) {
-        debRef.current = setTimeout(async () => {
-          setYahooSearching(true);
-          const res = await searchTiingo(text);
-          // Only show Yahoo results not already in local list
-          const localTickers = new Set(searchLocalAssets(text).map(a => a.ticker));
-          setYahooResults(res.filter(r => !localTickers.has(r.ticker)));
-          setYahooSearching(false);
-        }, 600);
-      } else {
-        setYahooResults([]);
-      }
     } else {
-      // Crypto: use CoinGecko search
       if (text.trim().length > 1) {
         debRef.current = setTimeout(async () => {
           setCryptoSearching(true);
           const res = await searchCoinGecko(text);
-          setCryptoResults(res);
+          setCryptoResults(res.map(r => ({ id: r.id, name: r.name, ticker: r.ticker })));
           setCryptoSearching(false);
         }, 500);
       } else {
@@ -402,38 +540,32 @@ function AssetSearch({ assetType, onAdd }: {
     setUiState({ mode: 'directLoading', ticker });
     const fetched = await lookupTickerDirect(ticker.trim().toUpperCase());
     if (fetched) {
-      setUiState({ mode: 'qty', result: {
+      const local: LocalAsset = {
         id: fetched.ticker, name: fetched.name, ticker: fetched.ticker,
         type: fetched.type === 'etf' ? 'etf' : fetched.type === 'bond' ? 'bond' : 'stock',
-        source: 'tiingo',
-      }});
+        tags: [],
+      };
+      setUiState({ mode: 'qty', result: local });
     } else {
       Alert.alert(
         'Ticker non trovato',
-        `Non riesco a trovare "${ticker}". Controlla che il ticker sia corretto (es. SWDA.MI include il suffisso .MI per Borsa Italiana).`,
+        `Impossibile trovare "${ticker}". Puoi inserire l'asset manualmente.`,
         [
-          { text: 'Inserisci manualmente', onPress: () => {
-            setManualTicker(ticker.trim().toUpperCase());
-            setUiState({ mode: 'manual' });
-          }},
+          { text: 'Inserisci manualmente', onPress: () => { setManualTicker(ticker.trim().toUpperCase()); setUiState({ mode: 'manual' }); } },
           { text: 'Riprova', style: 'cancel', onPress: () => setUiState({ mode: 'search' }) },
         ]
       );
     }
   };
 
-  const handleAddFromResult = async (result: LocalAsset | SearchResult, quantity: string) => {
+  const handleAddFromResult = async (result: LocalAsset, quantity: string) => {
     const qtyNum = parseFloat(quantity.replace(',', '.')) || 0;
     if (qtyNum <= 0) return;
-
-    // For local assets, still try to fetch live price via Yahoo
-    // For crypto, use CoinGecko
     if (assetType === 'crypto') {
       try {
         const fetched = await fetchCoinGeckoAsset(result.id);
         onAdd({ name: fetched.name, ticker: fetched.ticker, type: 'crypto', quantity: qtyNum, currentPrice: fetched.currentPrice, purchasePrice: fetched.currentPrice, color: nextAssetColor(), sparkline: fetched.sparkline });
       } catch {
-        // fallback: use name/ticker from result, price 0
         onAdd({ name: result.name, ticker: result.ticker, type: 'crypto', quantity: qtyNum, currentPrice: 0, purchasePrice: 0, color: nextAssetColor(), sparkline: [] });
       }
     } else {
@@ -441,161 +573,114 @@ function AssetSearch({ assetType, onAdd }: {
       if (fetched) {
         onAdd({ name: fetched.name, ticker: fetched.ticker, type: fetched.type, quantity: qtyNum, currentPrice: fetched.currentPrice, purchasePrice: fetched.currentPrice, color: nextAssetColor(), sparkline: fetched.sparkline });
       } else {
-        // fallback: use local data, price 0 (user can edit later)
-        const localType: Asset['type'] = result.type === 'etf' ? 'etf' : result.type === 'bond' ? 'bond' : 'stock';
-        onAdd({ name: result.name, ticker: result.ticker, type: localType, quantity: qtyNum, currentPrice: 0, purchasePrice: 0, color: nextAssetColor(), sparkline: [] });
-        Alert.alert('Prezzo non disponibile', 'L\'asset è stato aggiunto con prezzo 0. Puoi aggiornarlo in seguito dal Portfolio.');
+        onAdd({ name: result.name, ticker: result.ticker, type: result.type === 'etf' ? 'etf' : result.type === 'bond' ? 'bond' : 'stock', quantity: qtyNum, currentPrice: 0, purchasePrice: 0, color: nextAssetColor(), sparkline: [] });
+        Alert.alert('Prezzo non disponibile', 'Asset aggiunto con prezzo 0. Aggiornalo in seguito dal Portfolio.');
       }
     }
-    setUiState({ mode: 'search' });
-    setQty('');
-    setQuery('');
+    setUiState({ mode: 'search' }); setQty(''); setQuery('');
     setLocalResults(assetType === 'investment' ? searchLocalAssets('') : []);
-    setYahooResults([]);
-    setCryptoResults([]);
   };
 
-  const handleAddManual = () => {
-    const price = parseFloat(manualPrice.replace(',', '.')) || 0;
-    const quantity = parseFloat(qty.replace(',', '.')) || 0;
-    if (!manualName.trim() || !manualTicker.trim() || quantity <= 0) return;
-    onAdd({
-      name: manualName.trim(), ticker: manualTicker.trim().toUpperCase(),
-      type: assetType === 'crypto' ? 'crypto' : 'stock',
-      quantity, currentPrice: price, purchasePrice: price,
-      color: nextAssetColor(), sparkline: [],
-    });
-    setManualName(''); setManualTicker(''); setManualPrice(''); setQty('');
-    setUiState({ mode: 'search' });
-  };
-
-  // ── Manual mode ─────────────────────────────────────────────────────────────
   if (uiState.mode === 'manual') {
     return (
-      <View style={s.inlineForm}>
-        <Text style={s.formSectionLabel}>Inserimento manuale</Text>
-        <TextInput style={s.textInput} placeholder="Nome (es. iShares MSCI World)" placeholderTextColor={Colors.text.muted} value={manualName} onChangeText={setManualName} />
-        <TextInput style={s.textInput} placeholder="Ticker (es. SWDA.MI)" placeholderTextColor={Colors.text.muted} value={manualTicker} onChangeText={setManualTicker} autoCapitalize="characters" />
-        <TextInput style={s.textInput} placeholder="Prezzo attuale (€) — opzionale" placeholderTextColor={Colors.text.muted} value={manualPrice} onChangeText={setManualPrice} keyboardType="decimal-pad" />
-        <TextInput style={s.textInput} placeholder={assetType === 'crypto' ? 'Quantità (es. 0.5)' : 'Numero quote (es. 10)'} placeholderTextColor={Colors.text.muted} value={qty} onChangeText={setQty} keyboardType="decimal-pad" />
-        <View style={s.rowActions}>
+      <View style={ui.manualForm}>
+        <Text style={ui.sectionLabel}>Inserimento manuale</Text>
+        <TextInput style={ui.textInput} placeholder="Nome (es. iShares MSCI World)" placeholderTextColor={Colors.text.muted} value={manualName} onChangeText={setManualName} />
+        <TextInput style={ui.textInput} placeholder="Ticker (es. SWDA.MI)" placeholderTextColor={Colors.text.muted} value={manualTicker} onChangeText={setManualTicker} autoCapitalize="characters" />
+        <TextInput style={ui.textInput} placeholder="Prezzo attuale (€) — opzionale" placeholderTextColor={Colors.text.muted} value={manualPrice} onChangeText={setManualPrice} keyboardType="decimal-pad" />
+        <TextInput style={ui.textInput} placeholder="Quantità" placeholderTextColor={Colors.text.muted} value={qty} onChangeText={setQty} keyboardType="decimal-pad" />
+        <View style={ui.rowActions}>
           <GhostBtn label="Annulla" onPress={() => setUiState({ mode: 'search' })} />
-          <PrimaryBtn label="Aggiungi" onPress={handleAddManual} disabled={!manualName.trim() || !manualTicker.trim() || !qty} />
+          <PrimaryBtn label="Aggiungi" onPress={() => {
+            const price = parseFloat(manualPrice.replace(',', '.')) || 0;
+            const qtyNum = parseFloat(qty.replace(',', '.')) || 0;
+            if (!manualName.trim() || !manualTicker.trim() || qtyNum <= 0) return;
+            Keyboard.dismiss();
+            onAdd({ name: manualName.trim(), ticker: manualTicker.trim().toUpperCase(), type: assetType === 'crypto' ? 'crypto' : 'stock', quantity: qtyNum, currentPrice: price, purchasePrice: price, color: nextAssetColor(), sparkline: [] });
+            setManualName(''); setManualTicker(''); setManualPrice(''); setQty('');
+            setUiState({ mode: 'search' });
+          }} />
         </View>
       </View>
     );
   }
 
-  // ── Direct loading ──────────────────────────────────────────────────────────
   if (uiState.mode === 'directLoading') {
     return (
-      <View style={[s.inlineForm, { alignItems: 'center', gap: 12 }]}>
-        <ActivityIndicator color={Colors.accent.primary} />
-        <Text style={s.metaText}>Carico dati per {uiState.ticker}…</Text>
+      <View style={ui.loadingRow}>
+        <ActivityIndicator size="small" color={Colors.accent.primary} />
+        <Text style={ui.loadingText}>Carico {uiState.ticker}…</Text>
       </View>
     );
   }
 
-  // ── Qty input (after selecting a result) ────────────────────────────────────
   if (uiState.mode === 'qty') {
     const r = uiState.result;
     return (
-      <View style={s.inlineForm}>
-        <View style={s.selectedRow}>
-          <View style={s.tickerBadge}><Text style={s.tickerBadgeText}>{r.ticker.slice(0, 4)}</Text></View>
+      <View style={ui.qtyForm}>
+        <View style={ui.qtyResult}>
           <View style={{ flex: 1 }}>
-            <Text style={s.listRowName} numberOfLines={1}>{r.name}</Text>
-            <Text style={s.metaText}>{r.type.toUpperCase()}{('exchange' in r && r.exchange) ? ` · ${r.exchange}` : ''}</Text>
+            <Text style={ui.qtyName}>{r.name}</Text>
+            <Text style={ui.qtyMeta}>{r.type.toUpperCase()} · {r.ticker}</Text>
           </View>
           <TouchableOpacity onPress={() => setUiState({ mode: 'search' })}>
             <Ionicons name="close-circle" size={20} color={Colors.text.muted} />
           </TouchableOpacity>
         </View>
-        <TextInput
-          style={s.textInput}
-          placeholder={assetType === 'crypto' ? 'Quantità posseduta (es. 0.5)' : 'Numero di quote (es. 10)'}
-          placeholderTextColor={Colors.text.muted}
-          value={qty}
-          onChangeText={setQty}
-          keyboardType="decimal-pad"
-          autoFocus
-        />
-        <View style={s.rowActions}>
-          <GhostBtn label="Indietro" onPress={() => setUiState({ mode: 'search' })} />
-          <PrimaryBtn label="Aggiungi" onPress={() => handleAddFromResult(r, qty)} disabled={!qty || parseFloat(qty) <= 0} />
+        <TextInput style={ui.textInput} placeholder={assetType === 'crypto' ? 'Quantità (es. 0.05)' : 'Numero di quote (es. 10)'} placeholderTextColor={Colors.text.muted} value={qty} onChangeText={setQty} keyboardType="decimal-pad" autoFocus />
+        <View style={ui.rowActions}>
+          <GhostBtn label="Annulla" onPress={() => { setUiState({ mode: 'search' }); setQty(''); }} />
+          <PrimaryBtn label="Aggiungi" onPress={() => { Keyboard.dismiss(); handleAddFromResult(r, qty); }} disabled={(parseFloat(qty.replace(',', '.')) || 0) <= 0} />
         </View>
       </View>
     );
   }
 
-  // ── Search mode ─────────────────────────────────────────────────────────────
-  const isSearching = assetType === 'crypto' ? cryptoSearching : yahooSearching;
-  const results: (LocalAsset | SearchResult)[] = assetType === 'crypto'
-    ? cryptoResults
-    : [...localResults, ...yahooResults];
-  const showDirectBtn = assetType === 'investment' && query.length > 1 && looksLikeTicker(query);
-
   return (
-    <View style={s.inlineForm}>
+    <View>
       <TextInput
-        style={s.textInput}
-        placeholder={assetType === 'crypto' ? 'Cerca: bitcoin, ethereum, solana…' : 'Cerca: SWDA, VWCE, Apple, ETF…'}
+        style={ui.textInput}
+        placeholder={assetType === 'investment' ? 'Cerca per nome o ticker (es. SWDA, Vanguard…)' : 'Cerca criptovaluta (es. Bitcoin, ETH…)'}
         placeholderTextColor={Colors.text.muted}
         value={query}
         onChangeText={handleQueryChange}
+        autoCapitalize="none"
       />
-
-      {/* Direct ticker lookup button */}
-      {showDirectBtn && (
-        <TouchableOpacity
-          style={s.directBtn}
-          onPress={() => handleDirectLookup(query)}
-          activeOpacity={0.8}
-        >
-          <Ionicons name="flash" size={14} color={Colors.accent.primary} />
-          <Text style={s.directBtnText}>Carica "{query.toUpperCase()}" direttamente</Text>
+      {/* Direct ticker lookup */}
+      {assetType === 'investment' && query.trim().length > 1 && looksLikeTicker(query) && (
+        <TouchableOpacity style={ui.directLookupRow} onPress={() => handleDirectLookup(query)} activeOpacity={0.7}>
+          <Ionicons name="search" size={16} color={Colors.accent.primary} />
+          <Text style={ui.directLookupText}>Cerca "{query.trim().toUpperCase()}" direttamente</Text>
         </TouchableOpacity>
       )}
-
-      {isSearching && (
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 4 }}>
+      {/* Crypto searching */}
+      {assetType === 'crypto' && cryptoSearching && (
+        <View style={ui.searchingRow}>
           <ActivityIndicator size="small" color={Colors.accent.primary} />
-          <Text style={s.metaText}>Ricerca online…</Text>
+          <Text style={ui.loadingText}>Ricerca in corso…</Text>
         </View>
       )}
-
-      <ScrollView style={{ maxHeight: 220 }} nestedScrollEnabled>
-        {results.map((r, i) => (
+      {/* Results */}
+      <ScrollView style={{ maxHeight: 220 }} nestedScrollEnabled keyboardShouldPersistTaps="handled">
+        {(assetType === 'investment' ? localResults : cryptoResults.map(c => ({ id: c.id, name: c.name, ticker: c.ticker, type: 'crypto' as const, source: 'coingecko' as const, tags: [] }))).map(r => (
           <TouchableOpacity
-            key={r.id + i}
-            style={s.listRow}
-            onPress={() => setUiState({ mode: 'qty', result: r })}
+            key={r.id}
+            style={ui.resultRow}
+            onPress={() => setUiState({ mode: 'qty', result: r as LocalAsset })}
             activeOpacity={0.7}
           >
-            <View style={s.tickerBadge}><Text style={s.tickerBadgeText}>{r.ticker.slice(0, 4)}</Text></View>
             <View style={{ flex: 1 }}>
-              <Text style={s.listRowName} numberOfLines={1}>{r.name}</Text>
-              <Text style={s.metaText}>
-                {r.type.toUpperCase()}
-                {'exchange' in r && r.exchange ? ` · ${r.exchange}` : ''}
-                {'source' in r && r.source === 'tiingo' ? ' · Tiingo' : ''}
-              </Text>
+              <Text style={ui.resultName}>{r.name}</Text>
+              <Text style={ui.resultMeta}>{r.type.toUpperCase()} · {r.ticker}</Text>
             </View>
+            <Ionicons name="chevron-forward" size={14} color={Colors.text.muted} />
           </TouchableOpacity>
         ))}
       </ScrollView>
-
-      {results.length === 0 && query.length > 2 && !isSearching && (
-        <Text style={s.emptyHint}>
-          {assetType === 'investment'
-            ? 'Non trovato. Prova il ticker esatto (es. SWDA.MI) o usa il pulsante sopra per caricarlo direttamente.'
-            : 'Nessun risultato. Prova il nome completo (es. "bitcoin", "ethereum").'}
-        </Text>
-      )}
-
-      <TouchableOpacity onPress={() => setUiState({ mode: 'manual' })} style={s.manualLink}>
-        <Ionicons name="create-outline" size={14} color={Colors.text.muted} />
-        <Text style={s.manualLinkText}>Inserisci manualmente (ticker + prezzo)</Text>
+      {/* Manual entry fallback */}
+      <TouchableOpacity style={ui.manualEntryRow} onPress={() => setUiState({ mode: 'manual' })} activeOpacity={0.7}>
+        <Ionicons name="pencil-outline" size={14} color={Colors.text.muted} />
+        <Text style={ui.manualEntryText}>Inserisci manualmente</Text>
       </TouchableOpacity>
     </View>
   );
@@ -603,921 +688,1199 @@ function AssetSearch({ assetType, onAdd }: {
 
 // ── IncomeForm ────────────────────────────────────────────────────────────────
 
-function IncomeForm({ onAdd, onCancel }: {
-  onAdd: (src: IncomeSource) => void;
-  onCancel: () => void;
-}) {
+function IncomeForm({ onAdd }: { onAdd: (s: IncomeSource) => void }) {
   const [type, setType] = useState<IncomeType>('salary');
-  const [amtStr, setAmtStr] = useState('');
+  const [amount, setAmount] = useState('');
   const [freq, setFreq] = useState<'monthly' | 'annual'>('monthly');
-
-  const selectedType = INCOME_TYPES.find(t => t.id === type)!;
-  const canAdd = parseFloat(amtStr.replace(',', '.')) > 0;
-
   return (
-    <View style={s.inlineForm}>
-      <Text style={s.formSectionLabel}>Tipo di entrata</Text>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginHorizontal: -4 }}>
+    <View style={ui.incomeForm}>
+      <View style={ui.chipRow}>
         {INCOME_TYPES.map(t => (
           <TouchableOpacity
             key={t.id}
-            style={[s.typeChip, type === t.id && s.typeChipSelected]}
+            style={[ui.chip, type === t.id && ui.chipActive]}
             onPress={() => setType(t.id)}
             activeOpacity={0.7}
           >
-            <Ionicons name={t.icon as any} size={14} color={type === t.id ? Colors.accent.primary : Colors.text.muted} />
-            <Text style={[s.typeChipText, type === t.id && s.typeChipTextSelected]}>{t.label}</Text>
+            <Text style={[ui.chipText, type === t.id && ui.chipTextActive]}>{t.emoji} {t.label}</Text>
           </TouchableOpacity>
         ))}
-      </ScrollView>
-      <View style={s.amtRow}>
-        <Text style={s.currencyLabel}>€</Text>
+      </View>
+      <View style={ui.incomeRow}>
         <TextInput
-          style={s.amtInput}
-          placeholder="0"
+          style={[ui.textInput, { flex: 1 }]}
+          placeholder="Importo (€)"
           placeholderTextColor={Colors.text.muted}
-          value={amtStr}
-          onChangeText={setAmtStr}
+          value={amount}
+          onChangeText={setAmount}
           keyboardType="decimal-pad"
-          autoFocus
         />
+        <TouchableOpacity
+          style={ui.freqBtn}
+          onPress={() => setFreq(f => f === 'monthly' ? 'annual' : 'monthly')}
+          activeOpacity={0.7}
+        >
+          <Text style={ui.freqBtnText}>{freq === 'monthly' ? '/mese' : '/anno'}</Text>
+        </TouchableOpacity>
       </View>
-      <View style={s.freqRow}>
-        {(['monthly', 'annual'] as const).map(f => (
-          <TouchableOpacity
-            key={f}
-            style={[s.freqBtn, freq === f && s.freqBtnSelected]}
-            onPress={() => setFreq(f)}
-            activeOpacity={0.7}
-          >
-            <Text style={[s.freqBtnText, freq === f && s.freqBtnTextSelected]}>
-              {f === 'monthly' ? 'Al mese' : "All'anno"}
-            </Text>
-          </TouchableOpacity>
-        ))}
-      </View>
-      <View style={s.rowActions}>
-        <GhostBtn label="Annulla" onPress={onCancel} />
-        <PrimaryBtn label="Aggiungi" onPress={() => {
-          const amt = parseFloat(amtStr.replace(',', '.')) || 0;
-          onAdd({
-            id: `inc_${Date.now()}`,
-            type,
-            label: selectedType.label,
-            amount: amt,
-            frequency: freq,
-          });
-          setAmtStr('');
-        }} disabled={!canAdd} />
-      </View>
+      <PrimaryBtn
+        label="Aggiungi fonte"
+        onPress={() => {
+          const n = parseFloat(amount.replace(',', '.'));
+          if (isNaN(n) || n <= 0) return;
+          const t = INCOME_TYPES.find(x => x.id === type)!;
+          onAdd({ id: `inc_${Date.now()}`, type, label: t.label, amount: n, frequency: freq });
+          setAmount('');
+        }}
+        disabled={(parseFloat(amount.replace(',', '.')) || 0) <= 0}
+      />
     </View>
   );
 }
 
-// ── ImportPanel ───────────────────────────────────────────────────────────────
-
-function ImportPanel({ onImported }: { onImported: (result: ImportResult) => void }) {
-  const [phase, setPhase] = useState<'idle' | 'picking' | 'parsing' | 'done' | 'error'>('idle');
-  const [result, setResult] = useState<ImportResult | null>(null);
-  const [errMsg, setErrMsg] = useState('');
-
-  const pick = async (fileType: 'csv' | 'excel') => {
-    setPhase('picking');
-    try {
-      const mimes = fileType === 'csv'
-        ? ['text/csv', 'text/plain', 'text/comma-separated-values']
-        : ['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'application/vnd.ms-excel'];
-      const picked = await DocumentPicker.getDocumentAsync({ type: mimes, copyToCacheDirectory: true });
-      if (picked.canceled || !picked.assets?.[0]) { setPhase('idle'); return; }
-      setPhase('parsing');
-      let parseResult;
-      if (fileType === 'csv') {
-        const content = await FileSystem.readAsStringAsync(picked.assets[0].uri, { encoding: FileSystem.EncodingType.UTF8 });
-        parseResult = parseCSV(content);
-      } else {
-        parseResult = await parseExcel(picked.assets[0].uri);
-      }
-      if (parseResult.transactions.length === 0) {
-        setErrMsg('Nessuna transazione trovata nel file.'); setPhase('error'); return;
-      }
-      const r: ImportResult = { transactions: parseResult.transactions as Omit<Transaction, 'id'>[], bankName: parseResult.bankName };
-      setResult(r);
-      setPhase('done');
-      onImported(r);
-    } catch {
-      setErrMsg('Errore durante la lettura del file.'); setPhase('error');
-    }
-  };
-
-  if (phase === 'picking' || phase === 'parsing') {
-    return (
-      <View style={[s.importCard, { alignItems: 'center', gap: 12 }]}>
-        <ActivityIndicator color={Colors.accent.primary} />
-        <Text style={s.stepSubtitle}>{phase === 'picking' ? 'Selezione file…' : 'Analisi in corso…'}</Text>
-      </View>
-    );
-  }
-
-  if (phase === 'done' && result) {
-    return (
-      <View style={s.importCard}>
-        <View style={s.importSuccessRow}>
-          <View style={s.importCheckIcon}>
-            <Ionicons name="checkmark" size={18} color="#fff" />
-          </View>
-          <View style={{ flex: 1 }}>
-            <Text style={s.importSuccessTitle}>
-              {result.transactions.length} transazioni importate
-            </Text>
-            <Text style={s.metaText}>Banca: {result.bankName}</Text>
-          </View>
-          <TouchableOpacity onPress={() => { setPhase('idle'); setResult(null); }}>
-            <Ionicons name="refresh" size={18} color={Colors.text.muted} />
-          </TouchableOpacity>
-        </View>
-      </View>
-    );
-  }
-
-  if (phase === 'error') {
-    return (
-      <View style={s.importCard}>
-        <Text style={[s.metaText, { color: Colors.semantic.danger }]}>{errMsg}</Text>
-        <GhostBtn label="Riprova" onPress={() => setPhase('idle')} />
-      </View>
-    );
-  }
-
-  return (
-    <View style={s.importCard}>
-      <Text style={s.importCardTitle}>Scegli il formato del tuo estratto conto</Text>
-      <View style={s.importBtnsRow}>
-        <TouchableOpacity style={s.importFormatBtn} onPress={() => pick('csv')} activeOpacity={0.75}>
-          <Ionicons name="list" size={22} color={Colors.accent.primary} />
-          <Text style={s.importFormatLabel}>CSV</Text>
-          <Text style={s.importFormatDesc}>Intesa, UniCredit, N26…</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={s.importFormatBtn} onPress={() => pick('excel')} activeOpacity={0.75}>
-          <Ionicons name="grid" size={22} color={Colors.accent.primary} />
-          <Text style={s.importFormatLabel}>Excel</Text>
-          <Text style={s.importFormatDesc}>File .xlsx</Text>
-        </TouchableOpacity>
-      </View>
-    </View>
-  );
-}
-
-// ── Main Component ────────────────────────────────────────────────────────────
+// ── Main wizard ───────────────────────────────────────────────────────────────
 
 export default function OnboardingScreen() {
   const { addAccount, addAsset, addTransactions, setBudgetLimit } = useData();
+  const [state, setState] = useState<WizardState>(INIT_STATE);
+  const [importing, setImporting] = useState(false);
+  const [regionSearch, setRegionSearch] = useState('');
+  const [showRegionPicker, setShowRegionPicker] = useState(false);
+  const [showAddAccount, setShowAddAccount] = useState(false);
+  const [showAddIncome, setShowAddIncome] = useState(false);
+  const [completing, setCompleting] = useState(false);
+  const scrollRef = useRef<ScrollView>(null);
 
-  const [state, setState] = useState<WizardState>({
-    step: 0,
-    accounts: [],
-    assets: [],
-    incomeSources: [],
-    mainGoal: null,
-    effortLevel: null,
-    imported: null,
-    budgetEdits: {},
-  });
+  const set = useCallback((patch: Partial<WizardState>) =>
+    setState(s => ({ ...s, ...patch })), []);
 
-  // Step 1 – bank picker toggle
-  const [showBankPicker, setShowBankPicker] = useState(false);
-  // Step 2 – asset tab
-  const [assetTab, setAssetTab] = useState<'crypto' | 'investment'>('investment');
-  // Step 3 – income form toggle
-  const [showIncomeForm, setShowIncomeForm] = useState(false);
-
-  // ── Computed values ─────────────────────────────────────────────────────────
-
-  const income = useMemo(() => totalMonthlyIncome(state.incomeSources), [state.incomeSources]);
-  const netWorth = useMemo(() => totalNetWorth(state.accounts, state.assets), [state.accounts, state.assets]);
-
-  const budgets = useMemo<StoredBudget[]>(() => {
-    if (income <= 0) return [];
-    return calculateBudgets(income, state.mainGoal ? [state.mainGoal] : [], state.effortLevel ?? 'moderato');
-  }, [income, state.mainGoal, state.effortLevel]);
-
-  const budgetTotal = useMemo(() => {
-    return Object.entries(state.budgetEdits).reduce((s, [, v]) => s + (parseFloat(v) || 0), 0);
-  }, [state.budgetEdits]);
-
-  const residuo = income - budgetTotal;
-
-  const score = useMemo(() => computeScore(
-    income, netWorth, state.assets, state.incomeSources,
-    state.mainGoal, state.effortLevel,
-    state.imported?.transactions.length ?? 0
-  ), [income, netWorth, state.assets, state.incomeSources, state.mainGoal, state.effortLevel, state.imported]);
-
-  const tips = useMemo(() => generateTips(
-    income, netWorth, state.assets, state.incomeSources,
-    state.mainGoal, state.effortLevel, score
-  ), [income, netWorth, state.assets, state.incomeSources, state.mainGoal, state.effortLevel, score]);
-
-  const { label: sLabel, color: sColor } = scoreLabel(score);
-
-  // ── Helpers ─────────────────────────────────────────────────────────────────
-
-  const goTo = (step: number) => setState(s => ({ ...s, step }));
-
-  const initBudgetEdits = useCallback((bds: StoredBudget[]) => {
-    const edits: Record<string, string> = {};
-    bds.forEach(b => { edits[b.category] = String(b.limit); });
-    setState(s => ({ ...s, budgetEdits: edits }));
+  const nextStep = useCallback(() => {
+    Keyboard.dismiss();
+    setState(s => {
+      const next = { ...s, step: s.step + 1 };
+      // Initialize budget edits when entering step 9
+      if (next.step === 9 && Object.keys(next.budgetEdits).length === 0) {
+        const income = totalMonthlyIncome(next.incomeSources);
+        if (income > 0) {
+          const ctx: BudgetContext = {
+            householdSize: next.householdSize,
+            housingType: next.housingType,
+            housingMonthlyCost: parseFloat(next.housingCost.replace(',', '.')) || 0,
+            region: next.region,
+            dependents: next.dependents,
+          };
+          const budgets = calculateBudgets(income, next.mainGoal ? [next.mainGoal] : [], next.effortLevel ?? 'moderato', ctx);
+          const edits: Record<string, string> = {};
+          for (const b of budgets) edits[b.category] = String(b.limit);
+          next.budgetEdits = edits;
+        }
+      }
+      return next;
+    });
+    setTimeout(() => scrollRef.current?.scrollTo({ y: 0, animated: false }), 50);
   }, []);
 
-  const handleComplete = async () => {
-    for (const acc of state.accounts) {
-      addAccount({ ...acc, lastUpdated: new Date().toISOString() });
+  const prevStep = useCallback(() => {
+    Keyboard.dismiss();
+    setState(s => ({ ...s, step: Math.max(0, s.step - 1) }));
+    setTimeout(() => scrollRef.current?.scrollTo({ y: 0, animated: false }), 50);
+  }, []);
+
+  const income = totalMonthlyIncome(state.incomeSources);
+
+  const calculatedBudgets = useMemo<StoredBudget[]>(() => {
+    if (income <= 0) return [];
+    const ctx: BudgetContext = {
+      householdSize: state.householdSize,
+      housingType: state.housingType,
+      housingMonthlyCost: parseFloat(state.housingCost.replace(',', '.')) || 0,
+      region: state.region,
+      dependents: state.dependents,
+    };
+    return calculateBudgets(income, state.mainGoal ? [state.mainGoal] : [], state.effortLevel ?? 'moderato', ctx);
+  }, [income, state.householdSize, state.housingType, state.housingCost, state.region, state.dependents, state.mainGoal, state.effortLevel]);
+
+  const categoryInsights = useMemo(() =>
+    getCategoryInsights(state.imported?.transactions ?? null, calculatedBudgets, income),
+    [state.imported, calculatedBudgets, income]
+  );
+  const score = useMemo(() => computeScore(state, calculatedBudgets), [state, calculatedBudgets]);
+  const sl = scoreLabel(score);
+  const tips = useMemo(() => generateTips(categoryInsights, state), [categoryInsights, state]);
+
+  const handleImport = async (type: 'csv' | 'excel') => {
+    try {
+      setImporting(true);
+      const res = await DocumentPicker.getDocumentAsync({
+        type: type === 'csv' ? 'text/*' : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        copyToCacheDirectory: true,
+      });
+      if (res.canceled || !res.assets?.[0]) { setImporting(false); return; }
+      const uri = res.assets[0].uri;
+      const result = type === 'csv'
+        ? parseCSV(await FileSystem.readAsStringAsync(uri))
+        : await parseExcel(uri);
+      if (result.transactions.length === 0) {
+        Alert.alert('Nessuna transazione', 'Il file non contiene transazioni valide.');
+        setImporting(false); return;
+      }
+      set({ imported: { transactions: result.transactions, bankName: result.bankName } });
+      Alert.alert('Importato', `${result.transactions.length} transazioni da ${result.bankName}${result.skipped > 0 ? ` (${result.skipped} righe saltate)` : ''}.`);
+    } catch {
+      Alert.alert('Errore', 'Impossibile leggere il file.');
+    } finally {
+      setImporting(false);
     }
-    for (const a of state.assets) {
-      addAsset(a);
-    }
-    if (state.imported) {
-      addTransactions(state.imported.transactions);
-    }
-    const finalBudgets = budgets.map(b => ({
-      ...b,
-      limit: parseFloat(state.budgetEdits[b.category] ?? String(b.limit)) || b.limit,
-    }));
-    for (const b of finalBudgets) {
-      setBudgetLimit(b.category, b.limit);
-    }
-    await saveOnboardingData({
-      completed: true,
-      completedAt: new Date().toISOString(),
-      monthlyIncome: income,
-      goals: state.mainGoal ? [state.mainGoal] : [],
-      incomeSources: state.incomeSources,
-      mainGoal: state.mainGoal ?? undefined,
-      effortLevel: state.effortLevel ?? undefined,
-    });
-    router.replace('/(tabs)');
   };
 
-  // ── Step render ──────────────────────────────────────────────────────────────
+  const handleComplete = async () => {
+    if (completing) return;
+    setCompleting(true);
+    try {
+      for (const acc of state.accounts) addAccount({ ...acc, lastUpdated: new Date().toISOString() });
+      for (const a of [...state.cryptoAssets, ...state.assets]) addAsset(a);
+      const finalBudgets = calculatedBudgets;
+      for (const b of finalBudgets) {
+        const override = state.budgetEdits[b.category];
+        const limit = override !== undefined ? (parseInt(override, 10) || b.limit) : b.limit;
+        setBudgetLimit(b.category, limit);
+      }
+      if (state.imported) addTransactions(state.imported.transactions);
+      await saveOnboardingData({
+        completed: true,
+        completedAt: new Date().toISOString(),
+        monthlyIncome: income,
+        goals: state.mainGoal ? [state.mainGoal] : [],
+        incomeSources: state.incomeSources,
+        mainGoal: state.mainGoal ?? undefined,
+        effortLevel: state.effortLevel ?? undefined,
+        userProfile: {
+          name: state.userName || undefined,
+          birthYear: state.birthYear ? parseInt(state.birthYear, 10) : undefined,
+          region: state.region ?? undefined,
+          familyStatus: state.familyStatus ?? 'single',
+          householdSize: state.householdSize,
+          dependents: state.dependents,
+        },
+        housingInfo: state.housingType ? {
+          type: state.housingType,
+          monthlyCost: parseFloat(state.housingCost.replace(',', '.')) || 0,
+        } : undefined,
+        workInfo: state.workType ? {
+          type: state.workType,
+          sector: state.workSector ?? undefined,
+          stability: state.incomeStability ?? 'stable',
+        } : undefined,
+      });
+      router.replace('/(tabs)');
+    } catch {
+      Alert.alert('Errore', 'Impossibile salvare i dati. Riprova.');
+      setCompleting(false);
+    }
+  };
 
-  const { step } = state;
+  // ── Step renderers ──────────────────────────────────────────────────────────
 
-  // ── STEP 0 – Welcome ──────────────────────────────────────────────────────
+  const renderStep = () => {
+    switch (state.step) {
 
-  if (step === 0) {
-    return (
-      <LinearGradient colors={['#1A1060', '#6C63FF', '#0A0B0F']} locations={[0, 0.5, 1]} style={{ flex: 1 }}>
-        <SafeAreaView style={s.welcomeSafe} edges={['top', 'bottom']}>
-          <View style={s.welcomeBody}>
-            <View style={s.welcomeLogoWrap}>
-              <Ionicons name="wallet" size={52} color="#fff" />
-            </View>
-            <Text style={s.welcomeTitle}>FinancialOS</Text>
-            <Text style={s.welcomeSub}>Il tuo sistema operativo finanziario</Text>
-            <View style={s.featureList}>
-              {[
-                { icon: 'shield-checkmark', text: 'Dati solo sul tuo dispositivo, mai condivisi' },
-                { icon: 'trending-up',      text: 'Patrimonio netto in tempo reale' },
-                { icon: 'bulb',             text: 'Analisi e suggerimenti personalizzati' },
-              ].map((f, i) => (
-                <View key={i} style={s.featureRow}>
-                  <View style={s.featureIcon}><Ionicons name={f.icon as any} size={18} color="rgba(255,255,255,0.9)" /></View>
-                  <Text style={s.featureText}>{f.text}</Text>
+      // ── Step 0: Welcome ───────────────────────────────────────────────────
+      case 0:
+        return (
+          <LinearGradient colors={['#1a1040', '#0A0B0F']} style={s.welcomeGradient}>
+            <SafeAreaView style={s.welcomeSafe} edges={['top', 'bottom']}>
+              <View style={s.welcomeContent}>
+                <View style={s.welcomeIconWrap}>
+                  <Ionicons name="bar-chart" size={48} color={Colors.accent.primary} />
                 </View>
-              ))}
-            </View>
-          </View>
-          <PrimaryBtn label="Inizia la configurazione" onPress={() => goTo(1)} fullWidth />
-        </SafeAreaView>
-      </LinearGradient>
-    );
-  }
-
-  // ── STEP 1 – Conti Bancari ────────────────────────────────────────────────
-
-  if (step === 1) {
-    const totalBal = state.accounts.reduce((s, a) => s + a.balance, 0);
-    return (
-      <SafeAreaView style={s.safe} edges={['top', 'bottom']}>
-        <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-          <ScrollView style={s.scroll} contentContainerStyle={s.content} showsVerticalScrollIndicator={false}>
-            <ProgressBar current={1} total={TOTAL_STEPS} />
-            <StepHeader
-              title="I tuoi conti bancari"
-              subtitle="Aggiungi tutti i conti correnti e le carte. Serve per calcolare il tuo patrimonio netto reale."
-            />
-
-            {state.accounts.length > 0 && (
-              <View style={s.summaryChip}>
-                <Ionicons name="wallet-outline" size={16} color={Colors.semantic.success} />
-                <Text style={s.summaryChipText}>Liquidità totale: €{totalBal.toLocaleString('it-IT', { maximumFractionDigits: 0 })}</Text>
-              </View>
-            )}
-
-            {state.accounts.map((acc, i) => (
-              <View key={i} style={s.itemCard}>
-                <View style={{ flex: 1 }}>
-                  <Text style={s.itemCardTitle}>{acc.bankName}</Text>
-                  <Text style={s.metaText}>{acc.accountLabel}</Text>
+                <Text style={s.welcomeTitle}>FinancialOS</Text>
+                <Text style={s.welcomeSubtitle}>La tua guida finanziaria personale</Text>
+                <View style={s.welcomeFeatures}>
+                  {[
+                    { icon: 'analytics-outline', text: 'Analisi intelligente delle spese' },
+                    { icon: 'wallet-outline', text: 'Budget personalizzati sul tuo profilo' },
+                    { icon: 'trending-up-outline', text: 'Portfolio e investimenti in un posto' },
+                  ].map(f => (
+                    <View key={f.icon} style={s.welcomeFeatureRow}>
+                      <Ionicons name={f.icon as never} size={20} color={Colors.accent.primary} />
+                      <Text style={s.welcomeFeatureText}>{f.text}</Text>
+                    </View>
+                  ))}
                 </View>
-                <Text style={s.amountGreen}>€{acc.balance.toLocaleString('it-IT', { maximumFractionDigits: 0 })}</Text>
-                <TouchableOpacity onPress={() => setState(s => ({ ...s, accounts: s.accounts.filter((_, j) => j !== i) }))}>
-                  <Ionicons name="trash-outline" size={18} color={Colors.semantic.danger} />
-                </TouchableOpacity>
-              </View>
-            ))}
-
-            {showBankPicker
-              ? <BankPickerForm onConfirm={acc => { setState(s => ({ ...s, accounts: [...s.accounts, acc] })); setShowBankPicker(false); }} onCancel={() => setShowBankPicker(false)} />
-              : (
-                <TouchableOpacity style={s.addDashedBtn} onPress={() => setShowBankPicker(true)} activeOpacity={0.7}>
-                  <Ionicons name="add-circle" size={20} color={Colors.accent.primary} />
-                  <Text style={s.addDashedBtnText}>Aggiungi conto bancario</Text>
-                </TouchableOpacity>
-              )
-            }
-
-            <View style={s.stepFooter}>
-              <GhostBtn label={state.accounts.length > 0 ? 'Avanti →' : 'Salta per ora'} onPress={() => goTo(2)} />
-              {state.accounts.length > 0 && (
-                <PrimaryBtn label="Avanti" onPress={() => goTo(2)} />
-              )}
-            </View>
-          </ScrollView>
-        </KeyboardAvoidingView>
-      </SafeAreaView>
-    );
-  }
-
-  // ── STEP 2 – Investimenti ─────────────────────────────────────────────────
-
-  if (step === 2) {
-    const portValue = state.assets.reduce((s, a) => s + a.quantity * a.currentPrice, 0);
-    return (
-      <SafeAreaView style={s.safe} edges={['top', 'bottom']}>
-        <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-          <ScrollView style={s.scroll} contentContainerStyle={s.content} showsVerticalScrollIndicator={false}>
-            <ProgressBar current={2} total={TOTAL_STEPS} />
-            <StepHeader
-              title="Investimenti e crypto"
-              subtitle="Aggiungi ETF, azioni, obbligazioni e criptovalute. Puoi cercarlo per nome o ticker."
-            />
-
-            {portValue > 0 && (
-              <View style={s.summaryChip}>
-                <Ionicons name="trending-up-outline" size={16} color={Colors.semantic.success} />
-                <Text style={s.summaryChipText}>Portafoglio: €{portValue.toLocaleString('it-IT', { maximumFractionDigits: 0 })}</Text>
-              </View>
-            )}
-
-            {state.assets.map((a, i) => (
-              <View key={i} style={s.itemCard}>
-                <View style={[s.tickerBadge, { backgroundColor: a.color + '22' }]}>
-                  <Text style={[s.tickerBadgeText, { color: a.color }]}>{a.ticker.slice(0, 4)}</Text>
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={s.itemCardTitle}>{a.name}</Text>
-                  <Text style={s.metaText}>{a.quantity} × €{a.currentPrice.toFixed(2)}</Text>
-                </View>
-                <Text style={s.amountGreen}>€{(a.quantity * a.currentPrice).toLocaleString('it-IT', { maximumFractionDigits: 0 })}</Text>
-                <TouchableOpacity onPress={() => setState(s => ({ ...s, assets: s.assets.filter((_, j) => j !== i) }))}>
-                  <Ionicons name="trash-outline" size={18} color={Colors.semantic.danger} />
-                </TouchableOpacity>
-              </View>
-            ))}
-
-            {/* Tab selector */}
-            <View style={s.tabRow}>
-              {(['investment', 'crypto'] as const).map(tab => (
-                <TouchableOpacity
-                  key={tab}
-                  style={[s.tabBtn, assetTab === tab && s.tabBtnActive]}
-                  onPress={() => setAssetTab(tab)}
-                  activeOpacity={0.7}
-                >
-                  <Ionicons name={tab === 'crypto' ? 'logo-bitcoin' : 'trending-up'} size={16} color={assetTab === tab ? Colors.accent.primary : Colors.text.muted} />
-                  <Text style={[s.tabBtnText, assetTab === tab && s.tabBtnTextActive]}>
-                    {tab === 'crypto' ? 'Crypto' : 'ETF & Azioni'}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-
-            <AssetSearch
-              assetType={assetTab}
-              onAdd={a => setState(prev => ({ ...prev, assets: [...prev.assets, a] }))}
-            />
-
-            <View style={s.stepFooter}>
-              <GhostBtn label="Salta" onPress={() => goTo(3)} />
-              <PrimaryBtn label="Avanti" onPress={() => goTo(3)} />
-            </View>
-          </ScrollView>
-        </KeyboardAvoidingView>
-      </SafeAreaView>
-    );
-  }
-
-  // ── STEP 3 – Entrate ──────────────────────────────────────────────────────
-
-  if (step === 3) {
-    return (
-      <SafeAreaView style={s.safe} edges={['top', 'bottom']}>
-        <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-          <ScrollView style={s.scroll} contentContainerStyle={s.content} showsVerticalScrollIndicator={false}>
-            <ProgressBar current={3} total={TOTAL_STEPS} />
-            <StepHeader
-              title="Le tue entrate"
-              subtitle="Inserisci tutte le fonti di reddito: stipendio, affitti, freelance, dividendi… Più dati hai, più precisa sarà l'analisi."
-            />
-
-            {income > 0 && (
-              <View style={s.summaryChip}>
-                <Ionicons name="cash-outline" size={16} color={Colors.semantic.success} />
-                <Text style={s.summaryChipText}>Entrate mensili totali: €{income.toLocaleString('it-IT', { maximumFractionDigits: 0 })}</Text>
-              </View>
-            )}
-
-            {state.incomeSources.map((src, i) => {
-              const t = INCOME_TYPES.find(t => t.id === src.type)!;
-              const monthly = monthlyAmount(src);
-              return (
-                <View key={src.id} style={s.itemCard}>
-                  <Ionicons name={t.icon as any} size={20} color={Colors.accent.primary} />
-                  <View style={{ flex: 1 }}>
-                    <Text style={s.itemCardTitle}>{src.label}</Text>
-                    <Text style={s.metaText}>
-                      €{src.amount.toLocaleString('it-IT', { maximumFractionDigits: 0 })} {src.frequency === 'monthly' ? '/ mese' : '/ anno'}
-                      {src.frequency === 'annual' ? ` (≈ €${monthly.toFixed(0)}/mese)` : ''}
-                    </Text>
-                  </View>
-                  <Text style={s.amountGreen}>€{monthly.toLocaleString('it-IT', { maximumFractionDigits: 0 })}</Text>
-                  <TouchableOpacity onPress={() => setState(s => ({ ...s, incomeSources: s.incomeSources.filter((_, j) => j !== i) }))}>
-                    <Ionicons name="trash-outline" size={18} color={Colors.semantic.danger} />
-                  </TouchableOpacity>
-                </View>
-              );
-            })}
-
-            {showIncomeForm
-              ? <IncomeForm
-                  onAdd={src => { setState(s => ({ ...s, incomeSources: [...s.incomeSources, src] })); setShowIncomeForm(false); }}
-                  onCancel={() => setShowIncomeForm(false)}
-                />
-              : (
-                <TouchableOpacity style={s.addDashedBtn} onPress={() => setShowIncomeForm(true)} activeOpacity={0.7}>
-                  <Ionicons name="add-circle" size={20} color={Colors.accent.primary} />
-                  <Text style={s.addDashedBtnText}>
-                    {state.incomeSources.length === 0 ? 'Aggiungi il tuo reddito principale' : 'Aggiungi altra entrata'}
-                  </Text>
-                </TouchableOpacity>
-              )
-            }
-
-            <View style={s.stepFooter}>
-              <GhostBtn label="Salta" onPress={() => goTo(4)} />
-              <PrimaryBtn label="Avanti" onPress={() => goTo(4)} disabled={state.incomeSources.length === 0} />
-            </View>
-          </ScrollView>
-        </KeyboardAvoidingView>
-      </SafeAreaView>
-    );
-  }
-
-  // ── STEP 4 – Obiettivi & Impegno ──────────────────────────────────────────
-
-  if (step === 4) {
-    const saving = state.effortLevel && income > 0
-      ? getSavingsPotential(income, state.mainGoal ? [state.mainGoal] : [], state.effortLevel)
-      : null;
-
-    return (
-      <SafeAreaView style={s.safe} edges={['top', 'bottom']}>
-        <ScrollView style={s.scroll} contentContainerStyle={s.content} showsVerticalScrollIndicator={false}>
-          <ProgressBar current={4} total={TOTAL_STEPS} />
-          <StepHeader
-            title="Obiettivi & impegno"
-            subtitle="Cosa vuoi raggiungere? E quanto sei disposto a sacrificare per arrivarci?"
-          />
-
-          <Text style={s.subSectionLabel}>Obiettivo principale</Text>
-          <View style={s.goalGrid}>
-            {GOAL_OPTIONS.map(g => {
-              const sel = state.mainGoal === g.id;
-              return (
-                <TouchableOpacity
-                  key={g.id}
-                  style={[s.goalCard, sel && s.goalCardSel]}
-                  onPress={() => setState(s => ({ ...s, mainGoal: g.id }))}
-                  activeOpacity={0.75}
-                >
-                  <Ionicons name={g.icon as any} size={24} color={sel ? Colors.accent.primary : Colors.text.secondary} />
-                  <Text style={[s.goalCardTitle, sel && s.goalCardTitleSel]}>{g.label}</Text>
-                  <Text style={s.goalCardDesc}>{g.desc}</Text>
-                </TouchableOpacity>
-              );
-            })}
-          </View>
-
-          <Text style={s.subSectionLabel}>Livello di impegno</Text>
-          {EFFORT_OPTIONS.map(e => {
-            const sel = state.effortLevel === e.id;
-            return (
-              <TouchableOpacity
-                key={e.id}
-                style={[s.effortCard, sel && s.effortCardSel]}
-                onPress={() => setState(s => ({ ...s, effortLevel: e.id }))}
-                activeOpacity={0.75}
-              >
-                <Text style={s.effortEmoji}>{e.emoji}</Text>
-                <View style={{ flex: 1 }}>
-                  <Text style={[s.effortLabel, sel && s.effortLabelSel]}>{e.label}</Text>
-                  <Text style={s.effortDesc}>{e.desc}</Text>
-                </View>
-                <View style={s.savingHintBadge}>
-                  <Text style={s.savingHintText}>{e.savingHint}</Text>
-                </View>
-              </TouchableOpacity>
-            );
-          })}
-
-          {saving !== null && income > 0 && (
-            <View style={[s.summaryChip, saving < 0 && { backgroundColor: Colors.semantic.dangerDim }]}>
-              <Ionicons name="calculator-outline" size={16} color={saving >= 0 ? Colors.semantic.success : Colors.semantic.danger} />
-              <Text style={[s.summaryChipText, saving < 0 && { color: Colors.semantic.danger }]}>
-                Risparmio stimato: €{Math.max(0, saving).toLocaleString('it-IT', { maximumFractionDigits: 0 })}/mese
-              </Text>
-            </View>
-          )}
-
-          <View style={s.stepFooter}>
-            <GhostBtn label="Salta" onPress={() => goTo(5)} />
-            <PrimaryBtn
-              label="Avanti"
-              onPress={() => goTo(5)}
-              disabled={!state.mainGoal || !state.effortLevel}
-            />
-          </View>
-        </ScrollView>
-      </SafeAreaView>
-    );
-  }
-
-  // ── STEP 5 – Importa Estratto Conto ──────────────────────────────────────
-
-  if (step === 5) {
-    return (
-      <SafeAreaView style={s.safe} edges={['top', 'bottom']}>
-        <ScrollView style={s.scroll} contentContainerStyle={s.content} showsVerticalScrollIndicator={false}>
-          <ProgressBar current={5} total={TOTAL_STEPS} />
-          <StepHeader
-            title="Importa il tuo estratto conto"
-            subtitle="Analizzo le tue spese reali per darti budget precisi e suggerimenti mirati. È il passo che fa la differenza."
-          />
-
-          <View style={s.infoCard}>
-            <Ionicons name="lock-closed-outline" size={18} color={Colors.accent.primary} />
-            <Text style={s.infoCardText}>
-              Il file viene letto solo sul tuo dispositivo. Nessun dato viene inviato a server esterni.
-            </Text>
-          </View>
-
-          <ImportPanel
-            onImported={result => setState(s => ({ ...s, imported: result }))}
-          />
-
-          {state.imported && (
-            <View style={s.infoCard}>
-              <Ionicons name="sparkles-outline" size={18} color={Colors.semantic.success} />
-              <Text style={[s.infoCardText, { color: Colors.semantic.success }]}>
-                Ottimo! Userò queste transazioni per calibrare i tuoi budget nel prossimo step.
-              </Text>
-            </View>
-          )}
-
-          <View style={s.stepFooter}>
-            <GhostBtn label="Salta — faccio dopo" onPress={() => { initBudgetEdits(budgets); goTo(6); }} />
-            <PrimaryBtn label="Avanti" onPress={() => { initBudgetEdits(budgets); goTo(6); }} />
-          </View>
-        </ScrollView>
-      </SafeAreaView>
-    );
-  }
-
-  // ── STEP 6 – Analisi & Budget ─────────────────────────────────────────────
-
-  if (step === 6) {
-    return (
-      <SafeAreaView style={s.safe} edges={['top', 'bottom']}>
-        <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-          <ScrollView style={s.scroll} contentContainerStyle={s.content} showsVerticalScrollIndicator={false}>
-            <ProgressBar current={6} total={TOTAL_STEPS} />
-            <StepHeader title="La tua analisi finanziaria" />
-
-            {/* Score */}
-            <View style={s.scoreCard}>
-              <View style={[s.scoreCircle, { borderColor: sColor }]}>
-                <Text style={[s.scoreNumber, { color: sColor }]}>{score}</Text>
-                <Text style={s.scoreMax}>/100</Text>
-              </View>
-              <View style={{ flex: 1, gap: 6 }}>
-                <Text style={[s.scoreLabel, { color: sColor }]}>{sLabel}</Text>
-                <Text style={s.scoreDesc}>
-                  {score >= 60
-                    ? 'Hai una buona base finanziaria. Continuiamo a migliorarla insieme.'
-                    : score >= 40
-                    ? 'C\'è potenziale da esprimere. I budget che vedi qui ti aiuteranno a crescere.'
-                    : 'Siamo al punto di partenza — il momento migliore per iniziare è adesso.'}
+                <Text style={s.welcomeNote}>
+                  L'onboarding richiede ~5 minuti. Più informazioni fornisci, più precisi saranno i tuoi budget.
                 </Text>
               </View>
+              <View style={s.welcomeActions}>
+                <PrimaryBtn label="Inizia →" onPress={nextStep} />
+              </View>
+            </SafeAreaView>
+          </LinearGradient>
+        );
+
+      // ── Step 1: Chi sei ───────────────────────────────────────────────────
+      case 1:
+        return (
+          <>
+            <Text style={s.stepTitle}>Chi sei</Text>
+            <Text style={s.stepSubtitle}>Informazioni di base per personalizzare i tuoi budget</Text>
+
+            <Text style={s.fieldLabel}>Nome (opzionale)</Text>
+            <TextInput
+              style={ui.textInput}
+              placeholder="Come ti chiami?"
+              placeholderTextColor={Colors.text.muted}
+              value={state.userName}
+              onChangeText={v => set({ userName: v })}
+            />
+
+            <Text style={s.fieldLabel}>Anno di nascita (opzionale)</Text>
+            <TextInput
+              style={ui.textInput}
+              placeholder="es. 1990"
+              placeholderTextColor={Colors.text.muted}
+              value={state.birthYear}
+              onChangeText={v => set({ birthYear: v })}
+              keyboardType="number-pad"
+              maxLength={4}
+            />
+
+            <Text style={s.fieldLabel}>Stato civile *</Text>
+            <ChipRow
+              options={FAMILY_STATUS_OPTIONS}
+              value={state.familyStatus}
+              onChange={v => set({ familyStatus: v })}
+            />
+
+            <View style={s.stepperSection}>
+              <Stepper
+                label="Componenti del nucleo familiare"
+                sublabel="Includi te stesso/a"
+                value={state.householdSize}
+                onChange={v => set({ householdSize: v })}
+                min={1}
+                max={10}
+              />
+              <View style={ui.divider} />
+              <Stepper
+                label="Figli a carico"
+                sublabel="Under 26 o non indipendenti"
+                value={state.dependents}
+                onChange={v => set({ dependents: v })}
+                min={0}
+                max={8}
+              />
+            </View>
+          </>
+        );
+
+      // ── Step 2: Dove vivi ─────────────────────────────────────────────────
+      case 2:
+        return (
+          <>
+            <Text style={s.stepTitle}>Dove vivi</Text>
+            <Text style={s.stepSubtitle}>Il costo della vita varia molto tra regioni — questo ci permette di calibrare i budget</Text>
+
+            <Text style={s.fieldLabel}>Regione *</Text>
+            <TouchableOpacity
+              style={[ui.textInput, s.regionPicker]}
+              onPress={() => setShowRegionPicker(v => !v)}
+              activeOpacity={0.7}
+            >
+              <Text style={{ color: state.region ? Colors.text.primary : Colors.text.muted, ...Typography.body }}>
+                {state.region ?? 'Seleziona la tua regione…'}
+              </Text>
+              <Ionicons name={showRegionPicker ? 'chevron-up' : 'chevron-down'} size={16} color={Colors.text.muted} />
+            </TouchableOpacity>
+            {showRegionPicker && (
+              <View style={s.regionDropdown}>
+                <TextInput
+                  style={[ui.textInput, { marginBottom: 8 }]}
+                  placeholder="Filtra regione…"
+                  placeholderTextColor={Colors.text.muted}
+                  value={regionSearch}
+                  onChangeText={setRegionSearch}
+                />
+                <ScrollView style={{ maxHeight: 200 }} nestedScrollEnabled>
+                  {ITALIAN_REGIONS.filter(r => !regionSearch || r.toLowerCase().includes(regionSearch.toLowerCase())).map(r => (
+                    <TouchableOpacity
+                      key={r}
+                      style={s.regionOption}
+                      onPress={() => { set({ region: r }); setShowRegionPicker(false); setRegionSearch(''); }}
+                      activeOpacity={0.7}
+                    >
+                      <Text style={[s.regionOptionText, state.region === r && { color: Colors.accent.primary }]}>{r}</Text>
+                      {state.region === r && <Ionicons name="checkmark" size={16} color={Colors.accent.primary} />}
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+              </View>
+            )}
+
+            <Text style={[s.fieldLabel, { marginTop: 20 }]}>Tipo di abitazione *</Text>
+            <View style={s.housingGrid}>
+              {HOUSING_OPTIONS.map(o => (
+                <TouchableOpacity
+                  key={o.id}
+                  style={[s.housingCard, state.housingType === o.id && s.housingCardActive]}
+                  onPress={() => set({ housingType: o.id })}
+                  activeOpacity={0.7}
+                >
+                  <Text style={s.housingEmoji}>{o.emoji}</Text>
+                  <Text style={[s.housingLabel, state.housingType === o.id && s.housingLabelActive]}>{o.label}</Text>
+                  <Text style={s.housingDesc}>{o.desc}</Text>
+                </TouchableOpacity>
+              ))}
             </View>
 
-            {/* Tips */}
-            {tips.length > 0 && (
-              <View style={s.tipsSection}>
-                <Text style={s.subSectionLabel}>Suggerimenti immediati</Text>
-                {tips.map((tip, i) => (
-                  <View key={i} style={s.tipCard}>
-                    <View style={s.tipBullet}><Text style={s.tipBulletText}>{i + 1}</Text></View>
-                    <Text style={s.tipText}>{tip}</Text>
+            {(state.housingType === 'renter' || state.housingType === 'owner') && (
+              <>
+                <Text style={[s.fieldLabel, { marginTop: 20 }]}>
+                  {state.housingType === 'renter' ? 'Affitto mensile (€)' : 'Rata mutuo mensile (€, opzionale)'}
+                </Text>
+                <TextInput
+                  style={ui.textInput}
+                  placeholder="es. 800"
+                  placeholderTextColor={Colors.text.muted}
+                  value={state.housingCost}
+                  onChangeText={v => set({ housingCost: v })}
+                  keyboardType="decimal-pad"
+                />
+              </>
+            )}
+          </>
+        );
+
+      // ── Step 3: Lavoro ────────────────────────────────────────────────────
+      case 3:
+        return (
+          <>
+            <Text style={s.stepTitle}>Lavoro & Stabilità</Text>
+            <Text style={s.stepSubtitle}>La tua situazione lavorativa influenza quanto dovresti tenere come riserva</Text>
+
+            <Text style={s.fieldLabel}>Tipo di lavoro *</Text>
+            <View style={s.workGrid}>
+              {WORK_TYPE_OPTIONS.map(o => (
+                <TouchableOpacity
+                  key={o.id}
+                  style={[s.workCard, state.workType === o.id && s.workCardActive]}
+                  onPress={() => set({ workType: o.id })}
+                  activeOpacity={0.7}
+                >
+                  <Text style={s.workEmoji}>{o.emoji}</Text>
+                  <Text style={[s.workLabel, state.workType === o.id && s.workLabelActive]}>{o.label}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            <Text style={[s.fieldLabel, { marginTop: 20 }]}>Settore (opzionale)</Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={s.sectorScroll}>
+              {WORK_SECTORS.map(sec => (
+                <TouchableOpacity
+                  key={sec}
+                  style={[ui.chip, state.workSector === sec && ui.chipActive, { marginRight: 8 }]}
+                  onPress={() => set({ workSector: state.workSector === sec ? null : sec })}
+                  activeOpacity={0.7}
+                >
+                  <Text style={[ui.chipText, state.workSector === sec && ui.chipTextActive]}>{sec}</Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+
+            <Text style={[s.fieldLabel, { marginTop: 20 }]}>Stabilità del reddito *</Text>
+            <View style={s.stabilityCards}>
+              {STABILITY_OPTIONS.map(o => (
+                <TouchableOpacity
+                  key={o.id}
+                  style={[s.stabilityCard, state.incomeStability === o.id && s.stabilityCardActive]}
+                  onPress={() => set({ incomeStability: o.id })}
+                  activeOpacity={0.7}
+                >
+                  <Text style={s.stabilityEmoji}>{o.emoji}</Text>
+                  <Text style={[s.stabilityLabel, state.incomeStability === o.id && s.stabilityLabelActive]}>{o.label}</Text>
+                  <Text style={s.stabilityDesc}>{o.desc}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </>
+        );
+
+      // ── Step 4: Entrate ───────────────────────────────────────────────────
+      case 4:
+        return (
+          <>
+            <Text style={s.stepTitle}>Le tue entrate</Text>
+            <Text style={s.stepSubtitle}>Inserisci tutte le fonti di reddito, anche quelle occasionali</Text>
+
+            {state.incomeSources.length > 0 && (
+              <View style={s.incomeList}>
+                {state.incomeSources.map(src => (
+                  <View key={src.id} style={s.incomeItem}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={s.incomeItemLabel}>{src.label}</Text>
+                      <Text style={s.incomeItemAmount}>{fmtEur(monthlyAmount(src))}/mese {src.frequency === 'annual' ? `(${fmtEur(src.amount)}/anno)` : ''}</Text>
+                    </View>
+                    <TouchableOpacity onPress={() => set({ incomeSources: state.incomeSources.filter(x => x.id !== src.id) })}>
+                      <Ionicons name="trash-outline" size={18} color={Colors.semantic.danger} />
+                    </TouchableOpacity>
+                  </View>
+                ))}
+                <View style={s.incomeTotalRow}>
+                  <Text style={s.incomeTotalLabel}>Totale mensile netto</Text>
+                  <Text style={s.incomeTotalAmount}>{fmtEur(income)}</Text>
+                </View>
+              </View>
+            )}
+
+            {showAddIncome ? (
+              <View style={s.incomeBorder}>
+                <IncomeForm onAdd={src => { set({ incomeSources: [...state.incomeSources, src] }); setShowAddIncome(false); }} />
+                <GhostBtn label="Annulla" onPress={() => setShowAddIncome(false)} />
+              </View>
+            ) : (
+              <TouchableOpacity style={s.addBtn} onPress={() => setShowAddIncome(true)} activeOpacity={0.7}>
+                <Ionicons name="add-circle" size={20} color={Colors.accent.primary} />
+                <Text style={s.addBtnText}>Aggiungi fonte di reddito</Text>
+              </TouchableOpacity>
+            )}
+          </>
+        );
+
+      // ── Step 5: Conti bancari ─────────────────────────────────────────────
+      case 5:
+        return (
+          <>
+            <Text style={s.stepTitle}>I tuoi conti bancari</Text>
+            <Text style={s.stepSubtitle}>Aggiungi i saldi attuali per calcolare il tuo patrimonio netto</Text>
+
+            {state.accounts.length > 0 && (
+              <View style={s.accountList}>
+                {state.accounts.map((acc, i) => (
+                  <View key={i} style={s.accountItem}>
+                    <View style={s.accountDot}>
+                      <Text style={s.accountDotText}>{acc.bankName[0]}</Text>
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={s.accountName}>{acc.bankName}</Text>
+                      <Text style={s.accountLabel}>{acc.accountLabel}</Text>
+                    </View>
+                    <Text style={s.accountBalance}>{fmtEur(acc.balance)}</Text>
+                    <TouchableOpacity onPress={() => set({ accounts: state.accounts.filter((_, j) => j !== i) })}>
+                      <Ionicons name="close-circle" size={18} color={Colors.text.muted} />
+                    </TouchableOpacity>
                   </View>
                 ))}
               </View>
             )}
 
-            {/* Budget */}
-            {budgets.length > 0 && (
+            {showAddAccount ? (
+              <View style={s.incomeBorder}>
+                <BankPickerForm
+                  onConfirm={acc => { set({ accounts: [...state.accounts, acc] }); setShowAddAccount(false); }}
+                  onCancel={() => setShowAddAccount(false)}
+                />
+              </View>
+            ) : (
+              <TouchableOpacity style={s.addBtn} onPress={() => setShowAddAccount(true)} activeOpacity={0.7}>
+                <Ionicons name="add-circle" size={20} color={Colors.accent.primary} />
+                <Text style={s.addBtnText}>Aggiungi conto</Text>
+              </TouchableOpacity>
+            )}
+
+            {state.accounts.length === 0 && (
+              <Text style={s.skipHint}>Puoi saltare e aggiungere i conti in seguito dalle Impostazioni</Text>
+            )}
+          </>
+        );
+
+      // ── Step 6: Crypto ────────────────────────────────────────────────────
+      case 6:
+        return (
+          <>
+            <Text style={s.stepTitle}>Criptovalute</Text>
+            <Text style={s.stepSubtitle}>Hai già crypto nel portfolio? Le includiamo nel calcolo del patrimonio</Text>
+
+            {state.hasCrypto === null && (
+              <View style={s.yesNoCards}>
+                <TouchableOpacity style={s.yesNoCard} onPress={() => set({ hasCrypto: true })} activeOpacity={0.7}>
+                  <Text style={s.yesNoEmoji}>₿</Text>
+                  <Text style={s.yesNoLabel}>Sì, ho crypto</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[s.yesNoCard, s.yesNoCardNo]} onPress={() => set({ hasCrypto: false })} activeOpacity={0.7}>
+                  <Text style={s.yesNoEmoji}>🚫</Text>
+                  <Text style={s.yesNoLabel}>No, non ho crypto</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {state.hasCrypto === false && (
+              <View style={s.noInvestTip}>
+                <Ionicons name="information-circle-outline" size={28} color={Colors.accent.primary} />
+                <Text style={s.noInvestText}>Nessun problema! Puoi sempre aggiungere criptovalute in seguito dal Portfolio.</Text>
+              </View>
+            )}
+
+            {state.hasCrypto === true && (
               <>
-                <View style={s.subSectionHeader}>
-                  <Text style={s.subSectionLabel}>Budget mensili proposti</Text>
-                  <View style={[s.residuoBadge, residuo < 0 && s.residuoBadgeDanger]}>
-                    <Text style={[s.residuoText, residuo < 0 && s.residuoTextDanger]}>
-                      Residuo: €{residuo.toLocaleString('it-IT', { maximumFractionDigits: 0 })}
+                {state.cryptoAssets.length > 0 && (
+                  <View style={s.assetChips}>
+                    {state.cryptoAssets.map((a, i) => (
+                      <View key={i} style={[s.assetChip, { borderColor: a.color }]}>
+                        <Text style={s.assetChipText}>{a.ticker} × {a.quantity}</Text>
+                        <TouchableOpacity onPress={() => set({ cryptoAssets: state.cryptoAssets.filter((_, j) => j !== i) })}>
+                          <Ionicons name="close" size={14} color={Colors.text.muted} />
+                        </TouchableOpacity>
+                      </View>
+                    ))}
+                  </View>
+                )}
+                <Text style={s.fieldLabel}>Cerca criptovaluta</Text>
+                <AssetSearch assetType="crypto" onAdd={a => set({ cryptoAssets: [...state.cryptoAssets, a] })} />
+              </>
+            )}
+          </>
+        );
+
+      // ── Step 7: Investimenti ──────────────────────────────────────────────
+      case 7:
+        return (
+          <>
+            <Text style={s.stepTitle}>Investimenti</Text>
+            <Text style={s.stepSubtitle}>Hai già un portfolio? Lo includiamo nel calcolo del patrimonio</Text>
+
+            {state.hasInvestments === null && (
+              <View style={s.yesNoCards}>
+                <TouchableOpacity style={s.yesNoCard} onPress={() => set({ hasInvestments: true })} activeOpacity={0.7}>
+                  <Text style={s.yesNoEmoji}>📈</Text>
+                  <Text style={s.yesNoLabel}>Sì, ho investimenti</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[s.yesNoCard, s.yesNoCardNo]} onPress={() => set({ hasInvestments: false })} activeOpacity={0.7}>
+                  <Text style={s.yesNoEmoji}>🚀</Text>
+                  <Text style={s.yesNoLabel}>No, voglio iniziare</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {state.hasInvestments === false && (
+              <View style={s.noInvestTip}>
+                <Ionicons name="bulb-outline" size={28} color={Colors.accent.primary} />
+                <Text style={s.noInvestText}>Perfetto! Dopo l'onboarding ti daremo consigli su come iniziare con piccole somme mensili.</Text>
+              </View>
+            )}
+
+            {state.hasInvestments === true && (
+              <>
+                {state.assets.length > 0 && (
+                  <View style={s.assetChips}>
+                    {state.assets.map((a, i) => (
+                      <View key={i} style={[s.assetChip, { borderColor: a.color }]}>
+                        <Text style={s.assetChipText}>{a.ticker} × {a.quantity}</Text>
+                        <TouchableOpacity onPress={() => set({ assets: state.assets.filter((_, j) => j !== i) })}>
+                          <Ionicons name="close" size={14} color={Colors.text.muted} />
+                        </TouchableOpacity>
+                      </View>
+                    ))}
+                  </View>
+                )}
+                <Text style={s.fieldLabel}>Aggiungi investimento</Text>
+                <AssetSearch assetType="investment" onAdd={a => set({ assets: [...state.assets, a] })} />
+              </>
+            )}
+          </>
+        );
+
+      // ── Step 8: Obiettivi & Impegno ───────────────────────────────────────
+      case 8:
+        return (
+          <>
+            <Text style={s.stepTitle}>Obiettivi & Impegno</Text>
+            <Text style={s.stepSubtitle}>Queste scelte guidano la distribuzione dei tuoi budget mensili</Text>
+
+            <Text style={s.fieldLabel}>Qual è il tuo obiettivo principale? *</Text>
+            <View style={s.goalGrid}>
+              {GOAL_OPTIONS.map(g => (
+                <TouchableOpacity
+                  key={g.id}
+                  style={[s.goalCard, state.mainGoal === g.id && s.goalCardActive]}
+                  onPress={() => set({ mainGoal: g.id })}
+                  activeOpacity={0.7}
+                >
+                  <Text style={s.goalEmoji}>{g.emoji}</Text>
+                  <Text style={[s.goalLabel, state.mainGoal === g.id && s.goalLabelActive]}>{g.label}</Text>
+                  <Text style={s.goalDesc}>{g.desc}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            <Text style={[s.fieldLabel, { marginTop: 24 }]}>Livello di impegno *</Text>
+            <View style={s.effortCards}>
+              {EFFORT_OPTIONS.map(o => (
+                <TouchableOpacity
+                  key={o.id}
+                  style={[s.effortCard, state.effortLevel === o.id && s.effortCardActive]}
+                  onPress={() => set({ effortLevel: o.id })}
+                  activeOpacity={0.7}
+                >
+                  <View style={s.effortHeader}>
+                    <Text style={s.effortEmoji}>{o.emoji}</Text>
+                    <Text style={[s.effortLabel, state.effortLevel === o.id && s.effortLabelActive]}>{o.label}</Text>
+                    <Text style={[s.effortSaving, { color: state.effortLevel === o.id ? Colors.accent.primary : Colors.text.muted }]}>{o.saving}</Text>
+                  </View>
+                  <Text style={s.effortDesc}>{o.desc}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            {state.mainGoal && state.effortLevel && income > 0 && (
+              <View style={s.savingPreview}>
+                <Ionicons name="save-outline" size={18} color={Colors.semantic.success} />
+                <Text style={s.savingPreviewText}>
+                  Con questo impegno puoi risparmiare circa{' '}
+                  <Text style={{ color: Colors.semantic.success, fontWeight: '700' }}>
+                    {fmtEur(calculatedBudgets.length > 0 ? income - calculatedBudgets.reduce((s, b) => s + b.limit, 0) : 0)}/mese
+                  </Text>
+                </Text>
+              </View>
+            )}
+          </>
+        );
+
+      // ── Step 9: Importa estratto conto ────────────────────────────────────
+      case 9:
+        return (
+          <>
+            <Text style={s.stepTitle}>Estratto conto</Text>
+            <Text style={s.stepSubtitle}>
+              Importa le transazioni per ricevere un'analisi precisa delle tue spese. Puoi saltare e farlo in seguito.
+            </Text>
+
+            {state.imported ? (
+              <View style={s.importedCard}>
+                <Ionicons name="checkmark-circle" size={32} color={Colors.semantic.success} />
+                <View style={{ flex: 1 }}>
+                  <Text style={s.importedTitle}>{state.imported.bankName}</Text>
+                  <Text style={s.importedSub}>{state.imported.transactions.length} transazioni importate</Text>
+                </View>
+                <TouchableOpacity onPress={() => set({ imported: null })}>
+                  <Ionicons name="close-circle" size={20} color={Colors.text.muted} />
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <View style={s.importButtons}>
+                {importing ? (
+                  <View style={s.importingRow}>
+                    <ActivityIndicator color={Colors.accent.primary} />
+                    <Text style={s.loadingText}>Elaborazione file…</Text>
+                  </View>
+                ) : (
+                  <>
+                    <TouchableOpacity style={s.importBtn} onPress={() => handleImport('csv')} activeOpacity={0.7}>
+                      <Ionicons name="document-text-outline" size={24} color={Colors.accent.primary} />
+                      <Text style={s.importBtnLabel}>CSV</Text>
+                      <Text style={s.importBtnDesc}>File .csv dalla banca</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={s.importBtn} onPress={() => handleImport('excel')} activeOpacity={0.7}>
+                      <Ionicons name="grid-outline" size={24} color={Colors.semantic.success} />
+                      <Text style={s.importBtnLabel}>Excel</Text>
+                      <Text style={s.importBtnDesc}>File .xlsx dalla banca</Text>
+                    </TouchableOpacity>
+                  </>
+                )}
+              </View>
+            )}
+
+            <View style={s.importNote}>
+              <Ionicons name="lock-closed-outline" size={14} color={Colors.text.muted} />
+              <Text style={s.importNoteText}>I dati rimangono solo sul tuo dispositivo</Text>
+            </View>
+          </>
+        );
+
+      // ── Step 10: Analisi & Budget ─────────────────────────────────────────
+      case 10:
+        return (
+          <>
+            <Text style={s.stepTitle}>La tua analisi</Text>
+            <Text style={s.stepSubtitle}>
+              {state.imported ? 'Basata sulle transazioni importate e sul tuo profilo' : 'Basata sul tuo profilo — importa un estratto per analisi più precise'}
+            </Text>
+
+            {/* Score circle */}
+            <View style={s.scoreSection}>
+              <View style={[s.scoreCircle, { borderColor: sl.color }]}>
+                <Text style={[s.scoreValue, { color: sl.color }]}>{score}</Text>
+                <Text style={s.scoreMax}>/100</Text>
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={[s.scoreLabel, { color: sl.color }]}>{sl.label}</Text>
+                <Text style={s.scoreDesc}>{sl.description}</Text>
+              </View>
+            </View>
+
+            {/* Category insights */}
+            {categoryInsights.length > 0 && (
+              <View style={s.insightsSection}>
+                <Text style={s.sectionHeader}>📊 Analisi spese</Text>
+                {categoryInsights.map(ci => (
+                  <View key={ci.id} style={s.insightRow}>
+                    <View style={s.insightLeft}>
+                      <Text style={s.insightIcon}>{ci.icon}</Text>
+                      <View>
+                        <Text style={s.insightName}>{ci.name}</Text>
+                        <Text style={s.insightMeta}>{ci.percentOfIncome}% del reddito</Text>
+                      </View>
+                    </View>
+                    <View style={s.insightRight}>
+                      <Text style={[s.insightAmount, ci.status === 'over' ? { color: Colors.semantic.danger } : ci.status === 'warning' ? { color: Colors.semantic.warning } : { color: Colors.semantic.success }]}>
+                        {fmtEur(ci.monthlySpent)}/m
+                      </Text>
+                      <Text style={s.insightBudget}>budget {fmtEur(ci.budget)}</Text>
+                    </View>
+                    {ci.status !== 'ok' && (
+                      <Ionicons
+                        name={ci.status === 'over' ? 'alert-circle' : 'warning'}
+                        size={16}
+                        color={ci.status === 'over' ? Colors.semantic.danger : Colors.semantic.warning}
+                        style={{ marginLeft: 8 }}
+                      />
+                    )}
+                  </View>
+                ))}
+              </View>
+            )}
+
+            {/* Tips */}
+            <View style={s.tipsSection}>
+              <Text style={s.sectionHeader}>💡 Consigli per te</Text>
+              {tips.map((tip, i) => (
+                <View key={i} style={s.tipRow}>
+                  <View style={s.tipBullet}><Text style={s.tipBulletText}>{i + 1}</Text></View>
+                  <Text style={s.tipText}>{tip}</Text>
+                </View>
+              ))}
+            </View>
+
+            {/* Editable budgets */}
+            {calculatedBudgets.length > 0 && (
+              <View style={s.budgetSection}>
+                <Text style={s.sectionHeader}>📋 Budget mensili</Text>
+                <Text style={s.budgetNote}>Calcolati sul tuo profilo — modificali liberamente</Text>
+                {income > 0 && (
+                  <View style={s.residuoBar}>
+                    <Text style={s.residuoLabel}>Reddito: {fmtEur(income)}</Text>
+                    <Text style={[s.residuoValue, {
+                      color: income - Object.values(state.budgetEdits).reduce((s, v) => s + (parseInt(v, 10) || 0), 0) >= 0
+                        ? Colors.semantic.success : Colors.semantic.danger
+                    }]}>
+                      Residuo: {fmtEur(income - Object.values(state.budgetEdits).reduce((s, v) => s + (parseInt(v, 10) || 0), 0))}
                     </Text>
                   </View>
-                </View>
-                <Text style={s.budgetHint}>
-                  Modificali liberamente — sono basati su reddito ({income > 0 ? `€${income.toFixed(0)}/mese` : 'non inserito'}) e impegno selezionato.
-                </Text>
-                {budgets.map(b => {
+                )}
+                {calculatedBudgets.map(b => {
                   const cat = CATEGORIES[b.category];
-                  if (!cat) return null;
                   return (
-                    <View key={b.category} style={s.budgetRow}>
-                      <View style={[s.budgetIcon, { backgroundColor: cat.bgColor }]}>
-                        <Ionicons name={cat.icon as any} size={16} color={cat.color} />
+                    <View key={b.id} style={s.budgetRow}>
+                      <Text style={s.budgetIcon}>{cat?.icon ?? '💰'}</Text>
+                      <Text style={s.budgetName}>{cat?.label ?? b.category}</Text>
+                      <View style={s.budgetInputWrap}>
+                        <Text style={s.budgetEur}>€</Text>
+                        <TextInput
+                          style={s.budgetInput}
+                          value={state.budgetEdits[b.category] ?? String(b.limit)}
+                          onChangeText={v => set({ budgetEdits: { ...state.budgetEdits, [b.category]: v.replace(/[^0-9]/g, '') } })}
+                          keyboardType="number-pad"
+                        />
+                        <Text style={s.budgetPer}>/m</Text>
                       </View>
-                      <Text style={s.budgetLabel}>{cat.label}</Text>
-                      <TextInput
-                        style={s.budgetInput}
-                        value={state.budgetEdits[b.category] ?? String(b.limit)}
-                        onChangeText={v => setState(prev => ({ ...prev, budgetEdits: { ...prev.budgetEdits, [b.category]: v } }))}
-                        keyboardType="decimal-pad"
-                      />
-                      <Text style={s.budgetSuffix}>€</Text>
                     </View>
                   );
                 })}
-              </>
+              </View>
             )}
+          </>
+        );
 
-            <PrimaryBtn label="Conferma e continua" onPress={() => goTo(7)} fullWidth />
-          </ScrollView>
-        </KeyboardAvoidingView>
-      </SafeAreaView>
-    );
-  }
+      // ── Step 11: Tutto pronto ────────────────────────────────────────────
+      case 11:
+        return (
+          <View style={s.doneContent}>
+            <View style={s.doneIcon}>
+              <Ionicons name="checkmark-circle" size={80} color={Colors.semantic.success} />
+            </View>
+            <Text style={s.doneTitle}>
+              {state.userName ? `Tutto pronto, ${state.userName}!` : 'Tutto pronto!'}
+            </Text>
+            <Text style={s.doneSubtitle}>Il tuo profilo finanziario è configurato</Text>
+            <View style={s.summaryCards}>
+              {state.accounts.length > 0 && (
+                <View style={s.summaryCard}>
+                  <Ionicons name="wallet-outline" size={22} color={Colors.accent.primary} />
+                  <Text style={s.summaryCardValue}>{state.accounts.length} {state.accounts.length === 1 ? 'conto' : 'conti'}</Text>
+                  <Text style={s.summaryCardLabel}>{fmtEur(state.accounts.reduce((s, a) => s + a.balance, 0))}</Text>
+                </View>
+              )}
+              {calculatedBudgets.length > 0 && (
+                <View style={s.summaryCard}>
+                  <Ionicons name="pie-chart-outline" size={22} color={Colors.accent.primary} />
+                  <Text style={s.summaryCardValue}>{calculatedBudgets.length} budget</Text>
+                  <Text style={s.summaryCardLabel}>configurati</Text>
+                </View>
+              )}
+              {(state.cryptoAssets.length + state.assets.length) > 0 && (
+                <View style={s.summaryCard}>
+                  <Ionicons name="trending-up-outline" size={22} color={Colors.accent.primary} />
+                  <Text style={s.summaryCardValue}>{state.cryptoAssets.length + state.assets.length} asset</Text>
+                  <Text style={s.summaryCardLabel}>in portfolio</Text>
+                </View>
+              )}
+              {state.imported && (
+                <View style={s.summaryCard}>
+                  <Ionicons name="analytics-outline" size={22} color={Colors.semantic.success} />
+                  <Text style={s.summaryCardValue}>{state.imported.transactions.length} tx</Text>
+                  <Text style={s.summaryCardLabel}>importate</Text>
+                </View>
+              )}
+            </View>
+            <View style={{ width: '100%' }}>
+              <PrimaryBtn
+                label={completing ? 'Salvataggio…' : 'Entra nell\'app →'}
+                onPress={handleComplete}
+                disabled={completing}
+              />
+            </View>
+          </View>
+        );
 
-  // ── STEP 7 – Tutto Pronto ─────────────────────────────────────────────────
+      default: return null;
+    }
+  };
 
-  if (step === 7) {
-    const totalBal = state.accounts.reduce((s, a) => s + a.balance, 0);
-    const portVal = state.assets.reduce((s, a) => s + a.quantity * a.currentPrice, 0);
-    const motivationalMsg = score >= 60
-      ? 'Sei sulla strada giusta. FinancialOS ti aiuterà a mantenere il controllo e crescere ogni mese.'
-      : 'Ogni grande percorso parte da un primo passo. Hai già fatto il più difficile: iniziare. Adesso acceleriamo insieme.';
+  // ── Welcome step: full screen ─────────────────────────────────────────────
+  if (state.step === 0) return renderStep() as React.ReactElement;
 
+  // ── Done step: centered ───────────────────────────────────────────────────
+  if (state.step === 11) {
     return (
       <SafeAreaView style={s.safe} edges={['top', 'bottom']}>
-        <ScrollView style={s.scroll} contentContainerStyle={s.summaryContent}>
-          <View style={s.doneIcon}>
-            <Ionicons name="checkmark-circle" size={80} color={Colors.semantic.success} />
-          </View>
-          <Text style={s.doneTitle}>Tutto pronto! 🎉</Text>
-          <Text style={s.doneSub}>{motivationalMsg}</Text>
-
-          {/* Stats grid */}
-          <View style={s.statsGrid}>
-            <View style={s.statCard}>
-              <Text style={[s.statNum, { color: sColor }]}>{score}</Text>
-              <Text style={s.statLabel}>Punteggio</Text>
-              <Text style={[s.statSub, { color: sColor }]}>{sLabel}</Text>
-            </View>
-            {(totalBal + portVal) > 0 && (
-              <View style={s.statCard}>
-                <Text style={s.statNum}>€{(totalBal + portVal).toLocaleString('it-IT', { maximumFractionDigits: 0 })}</Text>
-                <Text style={s.statLabel}>Patrimonio netto</Text>
-                <Text style={s.statSub}>{state.accounts.length} conto/i + portafoglio</Text>
-              </View>
-            )}
-            {income > 0 && (
-              <View style={s.statCard}>
-                <Text style={s.statNum}>€{income.toLocaleString('it-IT', { maximumFractionDigits: 0 })}</Text>
-                <Text style={s.statLabel}>Entrate / mese</Text>
-                <Text style={s.statSub}>{state.incomeSources.length} fonte/i</Text>
-              </View>
-            )}
-            {budgets.length > 0 && (
-              <View style={s.statCard}>
-                <Text style={s.statNum}>{budgets.length}</Text>
-                <Text style={s.statLabel}>Budget attivi</Text>
-                <Text style={s.statSub}>Pronti per il tracciamento</Text>
-              </View>
-            )}
-          </View>
-
-          {state.imported && (
-            <View style={s.infoCard}>
-              <Ionicons name="analytics-outline" size={18} color={Colors.accent.primary} />
-              <Text style={s.infoCardText}>
-                {state.imported.transactions.length} transazioni importate — il Coach le userà per analizzare le tue spese.
-              </Text>
-            </View>
-          )}
-
-          <PrimaryBtn label="Entra nell'app" onPress={handleComplete} fullWidth />
+        <ScrollView contentContainerStyle={s.contentDone} showsVerticalScrollIndicator={false}>
+          {renderStep()}
         </ScrollView>
       </SafeAreaView>
     );
   }
 
-  return null;
+  // ── Standard steps 1–9 ───────────────────────────────────────────────────
+  const showProgress = state.step >= 1 && state.step <= PROGRESS_STEPS;
+  const valid = isStepValid(state);
+
+  return (
+    <SafeAreaView style={s.safe} edges={['top']}>
+      {/* Top bar */}
+      <View style={s.topBar}>
+        <TouchableOpacity style={s.backBtn} onPress={prevStep} activeOpacity={0.7}>
+          <Ionicons name="arrow-back" size={22} color={Colors.text.secondary} />
+        </TouchableOpacity>
+        {showProgress && (
+          <ProgressBar step={state.step} total={PROGRESS_STEPS} />
+        )}
+        <View style={s.backBtn} />
+      </View>
+
+      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        <ScrollView
+          ref={scrollRef}
+          style={{ flex: 1 }}
+          contentContainerStyle={s.content}
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+        >
+          {renderStep()}
+          <View style={{ height: 24 }} />
+        </ScrollView>
+
+        {/* Bottom actions */}
+        <View style={s.bottomActions}>
+          <PrimaryBtn
+            label={state.step === 10 ? 'Conferma →' : 'Avanti →'}
+            onPress={nextStep}
+            disabled={!valid}
+          />
+          {(state.step === 5 || state.step === 6 || state.step === 7 || state.step === 9) && (
+            <GhostBtn label="Salta questo passo" onPress={nextStep} />
+          )}
+        </View>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
+  );
 }
 
-// ── Styles ────────────────────────────────────────────────────────────────────
+// ── Shared UI StyleSheet ──────────────────────────────────────────────────────
+
+const ui = StyleSheet.create({
+  textInput: {
+    backgroundColor: Colors.bg.elevated,
+    borderRadius: Radius.md,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: 12,
+    color: Colors.text.primary,
+    ...Typography.body,
+    borderWidth: 1,
+    borderColor: Colors.border.subtle,
+  },
+  chip: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 20,
+    backgroundColor: Colors.bg.elevated,
+    borderWidth: 1,
+    borderColor: Colors.border.default,
+    marginBottom: 8,
+    marginRight: 8,
+  },
+  chipActive: { backgroundColor: Colors.accent.primary + '20', borderColor: Colors.accent.primary },
+  chipRow: { flexDirection: 'row', flexWrap: 'wrap' },
+  chipText: { ...Typography.caption, color: Colors.text.secondary, fontWeight: '500' },
+  chipTextActive: { color: Colors.accent.primary, fontWeight: '700' },
+  primaryBtn: {
+    backgroundColor: Colors.accent.primary,
+    borderRadius: Radius.md,
+    paddingVertical: 14,
+    paddingHorizontal: 24,
+    alignItems: 'center',
+  },
+  primaryBtnDisabled: { opacity: 0.4 },
+  primaryBtnText: { ...Typography.bodyMedium, color: '#fff', fontWeight: '700' },
+  ghostBtn: { paddingVertical: 12, alignItems: 'center' },
+  ghostBtnText: { ...Typography.body, color: Colors.text.muted },
+  divider: { height: 1, backgroundColor: Colors.border.subtle, marginVertical: 8 },
+  stepperRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 14 },
+  stepperLabel: { ...Typography.bodyMedium, color: Colors.text.primary },
+  stepperSublabel: { ...Typography.caption, color: Colors.text.muted, marginTop: 2 },
+  stepperControls: { flexDirection: 'row', alignItems: 'center', gap: 16 },
+  stepperBtn: { width: 32, height: 32, borderRadius: 16, backgroundColor: Colors.bg.elevated, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: Colors.border.default },
+  stepperBtnDisabled: { opacity: 0.3 },
+  stepperValue: { ...Typography.h3, color: Colors.text.primary, minWidth: 28, textAlign: 'center' },
+  progressContainer: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 8 },
+  progressTrack: { flex: 1, height: 4, backgroundColor: Colors.bg.elevated, borderRadius: 2 },
+  progressFill: { height: 4, backgroundColor: Colors.accent.primary, borderRadius: 2 },
+  progressLabel: { ...Typography.caption, color: Colors.text.muted, minWidth: 36, textAlign: 'right' },
+  pickerForm: { gap: Spacing.sm },
+  bankRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: Colors.border.subtle },
+  bankBadge: { width: 36, height: 36, borderRadius: 10, justifyContent: 'center', alignItems: 'center' },
+  bankBadgeText: { fontWeight: '700', fontSize: 14 },
+  bankRowName: { ...Typography.body, color: Colors.text.primary },
+  bankSelectedRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, backgroundColor: Colors.bg.elevated, borderRadius: Radius.md, padding: Spacing.sm },
+  pickerActions: { flexDirection: 'row', gap: Spacing.sm, justifyContent: 'flex-end' },
+  // AssetSearch
+  directLookupRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 10, paddingHorizontal: 4 },
+  directLookupText: { ...Typography.caption, color: Colors.accent.primary, fontWeight: '600' },
+  searchingRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 10 },
+  loadingRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 20, justifyContent: 'center' },
+  loadingText: { ...Typography.body, color: Colors.text.muted },
+  resultRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: Colors.border.subtle },
+  resultName: { ...Typography.bodyMedium, color: Colors.text.primary },
+  resultMeta: { ...Typography.caption, color: Colors.text.muted },
+  manualEntryRow: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 12 },
+  manualEntryText: { ...Typography.caption, color: Colors.text.muted },
+  manualForm: { gap: Spacing.sm },
+  qtyForm: { gap: Spacing.sm },
+  qtyResult: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: Colors.bg.elevated, borderRadius: Radius.md, padding: 12 },
+  qtyName: { ...Typography.bodyMedium, color: Colors.text.primary },
+  qtyMeta: { ...Typography.caption, color: Colors.text.muted },
+  rowActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 8 },
+  sectionLabel: { ...Typography.caption, color: Colors.text.muted, fontWeight: '600', marginBottom: 8 },
+  // IncomeForm
+  incomeForm: { gap: Spacing.sm },
+  incomeRow: { flexDirection: 'row', gap: Spacing.sm, alignItems: 'center' },
+  freqBtn: { backgroundColor: Colors.bg.elevated, borderRadius: Radius.md, paddingHorizontal: 14, paddingVertical: 12, borderWidth: 1, borderColor: Colors.border.default },
+  freqBtnText: { ...Typography.body, color: Colors.accent.primary, fontWeight: '600' },
+});
+
+// ── Screen-specific styles ────────────────────────────────────────────────────
 
 const s = StyleSheet.create({
   safe: { flex: 1, backgroundColor: Colors.bg.primary },
-  scroll: { flex: 1 },
-  content: { paddingHorizontal: Spacing.lg, paddingTop: Spacing.xl, paddingBottom: 48, gap: Spacing.lg },
-  summaryContent: { paddingHorizontal: Spacing.lg, paddingTop: 48, paddingBottom: 48, gap: Spacing.lg, alignItems: 'center' },
 
   // Welcome
-  welcomeSafe: { flex: 1, paddingHorizontal: Spacing.xl, paddingBottom: Spacing.xl, justifyContent: 'space-between' },
-  welcomeBody: { flex: 1, justifyContent: 'center', alignItems: 'center', gap: Spacing.lg },
-  welcomeLogoWrap: { width: 88, height: 88, borderRadius: 22, backgroundColor: 'rgba(255,255,255,0.15)', justifyContent: 'center', alignItems: 'center' },
-  welcomeTitle: { fontSize: 34, fontWeight: '800', color: '#fff', textAlign: 'center' },
-  welcomeSub: { ...Typography.body, color: 'rgba(255,255,255,0.75)', textAlign: 'center' },
-  featureList: { gap: Spacing.sm, alignSelf: 'stretch', marginTop: Spacing.xl },
-  featureRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: Radius.lg, padding: Spacing.md },
-  featureIcon: { width: 34, height: 34, borderRadius: 10, backgroundColor: 'rgba(255,255,255,0.15)', justifyContent: 'center', alignItems: 'center' },
-  featureText: { ...Typography.body, color: '#fff', flex: 1 },
+  welcomeGradient: { flex: 1 },
+  welcomeSafe: { flex: 1, justifyContent: 'space-between' },
+  welcomeContent: { flex: 1, padding: 28, justifyContent: 'center', gap: 24 },
+  welcomeIconWrap: { width: 80, height: 80, borderRadius: 24, backgroundColor: Colors.accent.primary + '20', justifyContent: 'center', alignItems: 'center' },
+  welcomeTitle: { fontSize: 36, fontWeight: '900', color: Colors.text.primary, letterSpacing: -1 },
+  welcomeSubtitle: { ...Typography.body, color: Colors.text.secondary },
+  welcomeFeatures: { gap: 16 },
+  welcomeFeatureRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  welcomeFeatureText: { ...Typography.body, color: Colors.text.secondary, flex: 1 },
+  welcomeNote: { ...Typography.caption, color: Colors.text.muted, lineHeight: 20 },
+  welcomeActions: { paddingHorizontal: 28, paddingBottom: 40 },
 
-  // Progress
-  progressRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, marginBottom: 4 },
-  progressTrack: { flex: 1, height: 4, backgroundColor: Colors.bg.elevated, borderRadius: 2, overflow: 'hidden' },
-  progressFill: { height: '100%', backgroundColor: Colors.accent.primary, borderRadius: 2 },
-  progressLabel: { ...Typography.micro, color: Colors.text.muted },
+  // Layout
+  topBar: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 10, gap: 8 },
+  backBtn: { width: 36, height: 36, borderRadius: 18, backgroundColor: Colors.bg.card, justifyContent: 'center', alignItems: 'center' },
+  content: { paddingHorizontal: 20, paddingTop: 16, gap: 16 },
+  contentDone: { paddingHorizontal: 20, paddingTop: 40, paddingBottom: 40, gap: 16 },
+  bottomActions: { paddingHorizontal: 20, paddingBottom: 28, paddingTop: 12, gap: 4, borderTopWidth: 1, borderTopColor: Colors.border.subtle, backgroundColor: Colors.bg.primary },
 
-  // Step headings
-  stepTitle: { ...Typography.h1, color: Colors.text.primary },
-  stepSubtitle: { ...Typography.caption, color: Colors.text.secondary, lineHeight: 20 },
-  subSectionLabel: { ...Typography.caption, color: Colors.text.muted, textTransform: 'uppercase', letterSpacing: 0.8, fontWeight: '600' },
-  subSectionHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  // Step headers
+  stepTitle: { fontSize: 26, fontWeight: '800', color: Colors.text.primary, letterSpacing: -0.5 },
+  stepSubtitle: { ...Typography.body, color: Colors.text.secondary, lineHeight: 22 },
+  fieldLabel: { ...Typography.caption, color: Colors.text.muted, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.5 },
 
-  // Summary chip
-  summaryChip: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, backgroundColor: Colors.semantic.successDim, borderRadius: Radius.lg, paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm },
-  summaryChipText: { ...Typography.bodyMedium, color: Colors.semantic.success, fontWeight: '600' },
+  // Stepper section
+  stepperSection: { backgroundColor: Colors.bg.card, borderRadius: Radius.lg, borderWidth: 1, borderColor: Colors.border.default, paddingHorizontal: 16 },
 
-  // Item cards
-  itemCard: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, backgroundColor: Colors.bg.card, borderRadius: Radius.lg, borderWidth: 1, borderColor: Colors.border.default, padding: Spacing.md },
-  itemCardTitle: { ...Typography.bodyMedium, color: Colors.text.primary },
-  amountGreen: { ...Typography.bodyMedium, color: Colors.semantic.success, fontWeight: '600' },
+  // Region picker
+  regionPicker: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  regionDropdown: { backgroundColor: Colors.bg.card, borderRadius: Radius.md, borderWidth: 1, borderColor: Colors.border.default, padding: 12, marginTop: 4 },
+  regionOption: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: Colors.border.subtle },
+  regionOptionText: { ...Typography.body, color: Colors.text.primary },
 
-  // Add button (dashed)
-  addDashedBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing.sm, borderRadius: Radius.lg, borderWidth: 1.5, borderColor: Colors.border.accent, borderStyle: 'dashed', padding: Spacing.md },
-  addDashedBtnText: { ...Typography.bodyMedium, color: Colors.accent.primary },
+  // Housing
+  housingGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
+  housingCard: { width: '47%', backgroundColor: Colors.bg.card, borderRadius: Radius.lg, borderWidth: 1.5, borderColor: Colors.border.default, padding: 14, gap: 4 },
+  housingCardActive: { borderColor: Colors.accent.primary, backgroundColor: Colors.accent.primary + '10' },
+  housingEmoji: { fontSize: 24 },
+  housingLabel: { ...Typography.bodyMedium, color: Colors.text.primary, fontWeight: '700' },
+  housingLabelActive: { color: Colors.accent.primary },
+  housingDesc: { ...Typography.caption, color: Colors.text.muted },
 
-  // Step footer
-  stepFooter: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: Spacing.sm },
+  // Work
+  workGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
+  workCard: { width: '30%', backgroundColor: Colors.bg.card, borderRadius: Radius.md, borderWidth: 1.5, borderColor: Colors.border.default, padding: 12, alignItems: 'center', gap: 6 },
+  workCardActive: { borderColor: Colors.accent.primary, backgroundColor: Colors.accent.primary + '10' },
+  workEmoji: { fontSize: 22 },
+  workLabel: { ...Typography.caption, color: Colors.text.secondary, textAlign: 'center', fontWeight: '600' },
+  workLabelActive: { color: Colors.accent.primary },
+  sectorScroll: { marginVertical: 4 },
+  stabilityCards: { gap: 10 },
+  stabilityCard: { backgroundColor: Colors.bg.card, borderRadius: Radius.md, borderWidth: 1.5, borderColor: Colors.border.default, padding: 14, flexDirection: 'row', alignItems: 'center', gap: 14 },
+  stabilityCardActive: { borderColor: Colors.accent.primary, backgroundColor: Colors.accent.primary + '10' },
+  stabilityEmoji: { fontSize: 22 },
+  stabilityLabel: { ...Typography.bodyMedium, color: Colors.text.primary, fontWeight: '700' },
+  stabilityLabelActive: { color: Colors.accent.primary },
+  stabilityDesc: { ...Typography.caption, color: Colors.text.muted, flex: 1 },
 
-  // Inline forms
-  inlineForm: { backgroundColor: Colors.bg.card, borderRadius: Radius.lg, borderWidth: 1, borderColor: Colors.border.default, padding: Spacing.md, gap: Spacing.sm },
-  formSectionLabel: { ...Typography.caption, color: Colors.text.muted, fontWeight: '600' },
-  textInput: { backgroundColor: Colors.bg.elevated, borderRadius: Radius.md, paddingHorizontal: Spacing.md, paddingVertical: 10, color: Colors.text.primary, ...Typography.body },
-  rowActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: Spacing.sm, marginTop: 4 },
-  selectedRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, backgroundColor: Colors.bg.elevated, borderRadius: Radius.md, padding: Spacing.sm },
+  // Income
+  incomeList: { backgroundColor: Colors.bg.card, borderRadius: Radius.lg, borderWidth: 1, borderColor: Colors.border.default, overflow: 'hidden' },
+  incomeItem: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14, borderBottomWidth: 1, borderBottomColor: Colors.border.subtle },
+  incomeItemLabel: { ...Typography.bodyMedium, color: Colors.text.primary },
+  incomeItemAmount: { ...Typography.caption, color: Colors.text.muted },
+  incomeTotalRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 14, backgroundColor: Colors.bg.elevated },
+  incomeTotalLabel: { ...Typography.bodyMedium, color: Colors.text.secondary },
+  incomeTotalAmount: { ...Typography.h3, color: Colors.semantic.success },
+  incomeBorder: { backgroundColor: Colors.bg.card, borderRadius: Radius.lg, borderWidth: 1, borderColor: Colors.border.default, padding: 16, gap: 12 },
 
-  // List rows (banks / assets)
-  listRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: Colors.border.subtle },
-  listRowName: { ...Typography.bodyMedium, color: Colors.text.primary },
-  colorBadge: { width: 36, height: 36, borderRadius: 10, justifyContent: 'center', alignItems: 'center' },
-  colorBadgeText: { fontWeight: '700', fontSize: 14 },
-  tickerBadge: { width: 40, height: 40, borderRadius: Radius.sm, backgroundColor: Colors.accent.glow, justifyContent: 'center', alignItems: 'center' },
-  tickerBadgeText: { ...Typography.micro, color: Colors.accent.primary, fontWeight: '700' },
-  metaText: { ...Typography.caption, color: Colors.text.muted },
-  emptyHint: { ...Typography.caption, color: Colors.text.muted, textAlign: 'center', marginTop: 4 },
-  manualLink: { flexDirection: 'row', alignItems: 'center', gap: 4, alignSelf: 'center', marginTop: 4 },
-  manualLinkText: { ...Typography.caption, color: Colors.text.muted },
-  directBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: Colors.accent.glow, borderRadius: Radius.md, borderWidth: 1, borderColor: Colors.border.accent, paddingHorizontal: Spacing.md, paddingVertical: 8 },
-  directBtnText: { ...Typography.caption, color: Colors.accent.primary, fontWeight: '600', flex: 1 },
+  // Add button
+  addBtn: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 14 },
+  addBtnText: { ...Typography.bodyMedium, color: Colors.accent.primary },
+  skipHint: { ...Typography.caption, color: Colors.text.muted, textAlign: 'center', marginTop: 12 },
 
-  // Asset tabs
-  tabRow: { flexDirection: 'row', gap: Spacing.sm, marginBottom: -4 },
-  tabBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing.xs, borderRadius: Radius.md, paddingVertical: 8, borderWidth: 1.5, borderColor: Colors.border.default, backgroundColor: Colors.bg.card },
-  tabBtnActive: { borderColor: Colors.accent.primary, backgroundColor: Colors.accent.glow },
-  tabBtnText: { ...Typography.bodyMedium, color: Colors.text.muted },
-  tabBtnTextActive: { color: Colors.accent.primary },
+  // Accounts
+  accountList: { backgroundColor: Colors.bg.card, borderRadius: Radius.lg, borderWidth: 1, borderColor: Colors.border.default, overflow: 'hidden', marginBottom: 4 },
+  accountItem: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14, borderBottomWidth: 1, borderBottomColor: Colors.border.subtle },
+  accountDot: { width: 36, height: 36, borderRadius: 10, backgroundColor: Colors.accent.primary + '30', justifyContent: 'center', alignItems: 'center' },
+  accountDotText: { fontWeight: '700', color: Colors.accent.primary, fontSize: 14 },
+  accountName: { ...Typography.bodyMedium, color: Colors.text.primary },
+  accountLabel: { ...Typography.caption, color: Colors.text.muted },
+  accountBalance: { ...Typography.bodyMedium, color: Colors.semantic.success, fontWeight: '700' },
 
-  // Income form
-  amtRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
-  currencyLabel: { fontSize: 32, fontWeight: '800', color: Colors.text.secondary },
-  amtInput: { fontSize: 40, fontWeight: '800', color: Colors.text.primary, flex: 1 },
-  freqRow: { flexDirection: 'row', gap: Spacing.sm },
-  freqBtn: { flex: 1, alignItems: 'center', paddingVertical: Spacing.sm, borderRadius: Radius.md, borderWidth: 1, borderColor: Colors.border.default, backgroundColor: Colors.bg.card },
-  freqBtnSelected: { borderColor: Colors.accent.primary, backgroundColor: Colors.accent.glow },
-  freqBtnText: { ...Typography.bodyMedium, color: Colors.text.secondary },
-  freqBtnTextSelected: { color: Colors.accent.primary },
-  typeChip: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: Spacing.sm, paddingVertical: 6, borderRadius: Radius.full, borderWidth: 1, borderColor: Colors.border.default, marginHorizontal: 4 },
-  typeChipSelected: { borderColor: Colors.accent.primary, backgroundColor: Colors.accent.glow },
-  typeChipText: { ...Typography.caption, color: Colors.text.muted },
-  typeChipTextSelected: { color: Colors.accent.primary },
+  // Assets
+  assetChips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 12 },
+  assetChip: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 16, borderWidth: 1, backgroundColor: Colors.bg.elevated },
+  assetChipText: { ...Typography.caption, color: Colors.text.secondary, fontWeight: '600' },
+
+  // Yes/No cards
+  yesNoCards: { flexDirection: 'row', gap: 14 },
+  yesNoCard: { flex: 1, backgroundColor: Colors.bg.card, borderRadius: Radius.lg, borderWidth: 2, borderColor: Colors.accent.primary, padding: 20, alignItems: 'center', gap: 10 },
+  yesNoCardNo: { borderColor: Colors.border.default },
+  yesNoEmoji: { fontSize: 32 },
+  yesNoLabel: { ...Typography.bodyMedium, color: Colors.text.primary, fontWeight: '700', textAlign: 'center' },
+  noInvestTip: { backgroundColor: Colors.accent.primary + '15', borderRadius: Radius.lg, borderWidth: 1, borderColor: Colors.accent.primary + '40', padding: 20, flexDirection: 'row', alignItems: 'flex-start', gap: 12 },
+  noInvestText: { ...Typography.body, color: Colors.text.secondary, flex: 1, lineHeight: 22 },
 
   // Goals
-  goalGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm },
-  goalCard: { width: '47%', backgroundColor: Colors.bg.card, borderRadius: Radius.lg, borderWidth: 1.5, borderColor: Colors.border.default, padding: Spacing.md, gap: 6, alignItems: 'center' },
-  goalCardSel: { borderColor: Colors.accent.primary, backgroundColor: Colors.accent.glow },
-  goalCardTitle: { ...Typography.bodyMedium, color: Colors.text.secondary, fontWeight: '600' },
-  goalCardTitleSel: { color: Colors.accent.primary },
-  goalCardDesc: { ...Typography.micro, color: Colors.text.muted, textAlign: 'center' },
+  goalGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
+  goalCard: { width: '47%', backgroundColor: Colors.bg.card, borderRadius: Radius.lg, borderWidth: 1.5, borderColor: Colors.border.default, padding: 14, gap: 4 },
+  goalCardActive: { borderColor: Colors.accent.primary, backgroundColor: Colors.accent.primary + '10' },
+  goalEmoji: { fontSize: 24 },
+  goalLabel: { ...Typography.bodyMedium, color: Colors.text.primary, fontWeight: '700' },
+  goalLabelActive: { color: Colors.accent.primary },
+  goalDesc: { ...Typography.caption, color: Colors.text.muted },
 
   // Effort
-  effortCard: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, backgroundColor: Colors.bg.card, borderRadius: Radius.lg, borderWidth: 1.5, borderColor: Colors.border.default, padding: Spacing.md },
-  effortCardSel: { borderColor: Colors.accent.primary, backgroundColor: Colors.accent.glow },
-  effortEmoji: { fontSize: 28 },
-  effortLabel: { ...Typography.bodyMedium, color: Colors.text.secondary, fontWeight: '700' },
-  effortLabelSel: { color: Colors.accent.primary },
+  effortCards: { gap: 12 },
+  effortCard: { backgroundColor: Colors.bg.card, borderRadius: Radius.lg, borderWidth: 1.5, borderColor: Colors.border.default, padding: 16, gap: 6 },
+  effortCardActive: { borderColor: Colors.accent.primary, backgroundColor: Colors.accent.primary + '10' },
+  effortHeader: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  effortEmoji: { fontSize: 22 },
+  effortLabel: { ...Typography.bodyMedium, color: Colors.text.primary, fontWeight: '700', flex: 1 },
+  effortLabelActive: { color: Colors.accent.primary },
+  effortSaving: { ...Typography.caption, fontWeight: '700' },
   effortDesc: { ...Typography.caption, color: Colors.text.muted },
-  savingHintBadge: { backgroundColor: Colors.bg.elevated, borderRadius: Radius.full, paddingHorizontal: Spacing.sm, paddingVertical: 4 },
-  savingHintText: { ...Typography.micro, color: Colors.text.secondary },
+  savingPreview: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: Colors.semantic.success + '15', borderRadius: Radius.md, padding: 12 },
+  savingPreviewText: { ...Typography.body, color: Colors.text.secondary, flex: 1 },
 
-  // Import panel
-  importCard: { backgroundColor: Colors.bg.card, borderRadius: Radius.lg, borderWidth: 1, borderColor: Colors.border.default, padding: Spacing.lg, gap: Spacing.md },
-  importCardTitle: { ...Typography.bodyMedium, color: Colors.text.primary, fontWeight: '600' },
-  importBtnsRow: { flexDirection: 'row', gap: Spacing.md },
-  importFormatBtn: { flex: 1, alignItems: 'center', gap: Spacing.sm, backgroundColor: Colors.bg.elevated, borderRadius: Radius.lg, borderWidth: 1, borderColor: Colors.border.accent, paddingVertical: Spacing.lg },
-  importFormatLabel: { ...Typography.bodyMedium, color: Colors.text.primary, fontWeight: '700' },
-  importFormatDesc: { ...Typography.micro, color: Colors.text.muted },
-  importSuccessRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
-  importCheckIcon: { width: 32, height: 32, borderRadius: 16, backgroundColor: Colors.semantic.success, justifyContent: 'center', alignItems: 'center' },
-  importSuccessTitle: { ...Typography.bodyMedium, color: Colors.text.primary, fontWeight: '600' },
-
-  // Info card
-  infoCard: { flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.sm, backgroundColor: Colors.bg.card, borderRadius: Radius.lg, padding: Spacing.md, borderWidth: 1, borderColor: Colors.border.default },
-  infoCardText: { ...Typography.caption, color: Colors.text.secondary, flex: 1, lineHeight: 18 },
+  // Import
+  importButtons: { flexDirection: 'row', gap: 14 },
+  importBtn: { flex: 1, backgroundColor: Colors.bg.card, borderRadius: Radius.lg, borderWidth: 1, borderColor: Colors.border.default, padding: 20, alignItems: 'center', gap: 8 },
+  importBtnLabel: { ...Typography.bodyMedium, color: Colors.text.primary, fontWeight: '700' },
+  importBtnDesc: { ...Typography.caption, color: Colors.text.muted, textAlign: 'center' },
+  importingRow: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 20, justifyContent: 'center' },
+  loadingText: { ...Typography.body, color: Colors.text.muted },
+  importedCard: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: Colors.semantic.success + '15', borderRadius: Radius.lg, borderWidth: 1, borderColor: Colors.semantic.success + '40', padding: 16 },
+  importedTitle: { ...Typography.bodyMedium, color: Colors.text.primary, fontWeight: '700' },
+  importedSub: { ...Typography.caption, color: Colors.text.muted },
+  importNote: { flexDirection: 'row', alignItems: 'center', gap: 6, justifyContent: 'center', marginTop: 8 },
+  importNoteText: { ...Typography.caption, color: Colors.text.muted },
 
   // Score
-  scoreCard: { flexDirection: 'row', alignItems: 'center', gap: Spacing.lg, backgroundColor: Colors.bg.card, borderRadius: Radius.xl, padding: Spacing.lg, borderWidth: 1, borderColor: Colors.border.default },
-  scoreCircle: { width: 90, height: 90, borderRadius: 45, borderWidth: 4, justifyContent: 'center', alignItems: 'center' },
-  scoreNumber: { fontSize: 30, fontWeight: '800' },
-  scoreMax: { ...Typography.micro, color: Colors.text.muted },
-  scoreLabel: { ...Typography.h3, fontWeight: '700' },
-  scoreDesc: { ...Typography.caption, color: Colors.text.secondary, lineHeight: 18 },
+  scoreSection: { flexDirection: 'row', alignItems: 'center', gap: 16, backgroundColor: Colors.bg.card, borderRadius: Radius.xl, borderWidth: 1, borderColor: Colors.border.default, padding: 20 },
+  scoreCircle: { width: 80, height: 80, borderRadius: 40, borderWidth: 4, justifyContent: 'center', alignItems: 'center' },
+  scoreValue: { fontSize: 28, fontWeight: '900' },
+  scoreMax: { ...Typography.caption, color: Colors.text.muted },
+  scoreLabel: { fontSize: 20, fontWeight: '800' },
+  scoreDesc: { ...Typography.caption, color: Colors.text.muted, marginTop: 4 },
+
+  // Insights
+  insightsSection: { gap: 4 },
+  sectionHeader: { ...Typography.bodyMedium, color: Colors.text.primary, fontWeight: '700', marginBottom: 10 },
+  insightRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: Colors.border.subtle },
+  insightLeft: { flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 },
+  insightIcon: { fontSize: 20 },
+  insightName: { ...Typography.bodyMedium, color: Colors.text.primary },
+  insightMeta: { ...Typography.caption, color: Colors.text.muted },
+  insightRight: { alignItems: 'flex-end' },
+  insightAmount: { ...Typography.bodyMedium, fontWeight: '700' },
+  insightBudget: { ...Typography.caption, color: Colors.text.muted },
 
   // Tips
-  tipsSection: { gap: Spacing.sm },
-  tipCard: { flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.sm, backgroundColor: Colors.bg.card, borderRadius: Radius.lg, padding: Spacing.md, borderWidth: 1, borderColor: Colors.border.default },
-  tipBullet: { width: 22, height: 22, borderRadius: 11, backgroundColor: Colors.accent.glow, justifyContent: 'center', alignItems: 'center', flexShrink: 0 },
-  tipBulletText: { ...Typography.micro, color: Colors.accent.primary, fontWeight: '700' },
-  tipText: { ...Typography.caption, color: Colors.text.primary, flex: 1, lineHeight: 20 },
+  tipsSection: { gap: 4 },
+  tipRow: { flexDirection: 'row', gap: 12, alignItems: 'flex-start', paddingVertical: 8 },
+  tipBullet: { width: 22, height: 22, borderRadius: 11, backgroundColor: Colors.accent.primary, justifyContent: 'center', alignItems: 'center', marginTop: 2 },
+  tipBulletText: { ...Typography.caption, color: '#fff', fontWeight: '700' },
+  tipText: { ...Typography.body, color: Colors.text.secondary, flex: 1, lineHeight: 22 },
 
-  // Budget
-  residuoBadge: { backgroundColor: Colors.semantic.successDim, borderRadius: Radius.full, paddingHorizontal: Spacing.sm, paddingVertical: 4 },
-  residuoBadgeDanger: { backgroundColor: Colors.semantic.dangerDim },
-  residuoText: { ...Typography.caption, color: Colors.semantic.success, fontWeight: '600' },
-  residuoTextDanger: { color: Colors.semantic.danger },
-  budgetHint: { ...Typography.caption, color: Colors.text.muted, lineHeight: 18 },
-  budgetRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, backgroundColor: Colors.bg.card, borderRadius: Radius.lg, borderWidth: 1, borderColor: Colors.border.default, paddingVertical: 10, paddingHorizontal: Spacing.md },
-  budgetIcon: { width: 32, height: 32, borderRadius: Radius.sm, justifyContent: 'center', alignItems: 'center' },
-  budgetLabel: { ...Typography.bodyMedium, color: Colors.text.primary, flex: 1 },
-  budgetInput: { ...Typography.bodyMedium, color: Colors.text.primary, backgroundColor: Colors.bg.elevated, borderRadius: Radius.sm, paddingHorizontal: Spacing.sm, paddingVertical: 6, minWidth: 72, textAlign: 'right' },
-  budgetSuffix: { ...Typography.caption, color: Colors.text.muted },
+  // Budgets
+  budgetSection: { gap: 4 },
+  budgetNote: { ...Typography.caption, color: Colors.text.muted, marginBottom: 10 },
+  residuoBar: { flexDirection: 'row', justifyContent: 'space-between', backgroundColor: Colors.bg.card, borderRadius: Radius.md, padding: 12, marginBottom: 4 },
+  residuoLabel: { ...Typography.caption, color: Colors.text.muted },
+  residuoValue: { ...Typography.caption, fontWeight: '700' },
+  budgetRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: Colors.border.subtle },
+  budgetIcon: { fontSize: 18, marginRight: 8 },
+  budgetName: { ...Typography.body, color: Colors.text.primary, flex: 1 },
+  budgetInputWrap: { flexDirection: 'row', alignItems: 'center', backgroundColor: Colors.bg.elevated, borderRadius: Radius.md, paddingHorizontal: 8, paddingVertical: 6 },
+  budgetEur: { ...Typography.caption, color: Colors.text.muted, marginRight: 2 },
+  budgetInput: { ...Typography.bodyMedium, color: Colors.text.primary, minWidth: 52, textAlign: 'right' },
+  budgetPer: { ...Typography.caption, color: Colors.text.muted, marginLeft: 2 },
 
-  // Done / summary
-  doneIcon: { marginBottom: Spacing.sm },
-  doneTitle: { ...Typography.h1, color: Colors.text.primary, textAlign: 'center' },
-  doneSub: { ...Typography.body, color: Colors.text.secondary, textAlign: 'center', lineHeight: 24 },
-  statsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm, justifyContent: 'center', width: '100%' },
-  statCard: { backgroundColor: Colors.bg.card, borderRadius: Radius.lg, borderWidth: 1, borderColor: Colors.border.default, padding: Spacing.lg, alignItems: 'center', gap: 4, minWidth: 140, flex: 1 },
-  statNum: { fontSize: 26, fontWeight: '800', color: Colors.text.primary },
-  statLabel: { ...Typography.caption, color: Colors.text.secondary },
-  statSub: { ...Typography.micro, color: Colors.text.muted },
-
-  // Buttons
-  primaryBtn: { backgroundColor: Colors.accent.primary, borderRadius: Radius.lg, paddingHorizontal: Spacing.xl, paddingVertical: 13, alignItems: 'center' },
-  fullWidth: { alignSelf: 'stretch' },
-  btnDisabled: { opacity: 0.38 },
-  primaryBtnText: { ...Typography.bodyMedium, color: '#fff', fontWeight: '700' },
-  ghostBtn: { borderRadius: Radius.lg, paddingHorizontal: Spacing.md, paddingVertical: 13, alignItems: 'center' },
-  ghostBtnText: { ...Typography.bodyMedium, color: Colors.text.secondary },
+  // Done
+  doneContent: { alignItems: 'center', gap: 20 },
+  doneIcon: { marginTop: 20 },
+  doneTitle: { fontSize: 28, fontWeight: '900', color: Colors.text.primary, textAlign: 'center' },
+  doneSubtitle: { ...Typography.body, color: Colors.text.secondary, textAlign: 'center' },
+  summaryCards: { flexDirection: 'row', flexWrap: 'wrap', gap: 12, justifyContent: 'center' },
+  summaryCard: { alignItems: 'center', backgroundColor: Colors.bg.card, borderRadius: Radius.lg, borderWidth: 1, borderColor: Colors.border.default, padding: 16, minWidth: 100, gap: 4 },
+  summaryCardValue: { ...Typography.bodyMedium, color: Colors.text.primary, fontWeight: '700' },
+  summaryCardLabel: { ...Typography.caption, color: Colors.text.muted },
 });
