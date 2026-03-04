@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   View,
   Text,
@@ -13,6 +13,7 @@ import { Colors, Typography, Radius } from '../../constants/theme';
 import { CATEGORIES } from '../../constants/categories';
 import { ProgressBar } from '../../components/ui/ProgressBar';
 import { useData } from '../../contexts/DataContext';
+import { BUDGET_CATEGORY_DESCRIPTIONS } from '../../utils/budgetCalculator';
 
 function formatAmount(amount: number): string {
   const sign = amount >= 0 ? '+' : '-';
@@ -29,6 +30,7 @@ function formatDate(dateStr: string): string {
 export default function BudgetDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { transactions, budgets } = useData();
+  const [descExpanded, setDescExpanded] = useState(true);
 
   const budget = budgets.find((b) => b.id === id);
 
@@ -125,6 +127,32 @@ export default function BudgetDetailScreen() {
             </View>
           </View>
         </View>
+
+        {/* Description */}
+        {BUDGET_CATEGORY_DESCRIPTIONS[budget.category] && (
+          <TouchableOpacity
+            style={styles.descCard}
+            activeOpacity={0.7}
+            onPress={() => setDescExpanded((v) => !v)}
+          >
+            <View style={styles.descHeader}>
+              <View style={[styles.descIconWrap, { backgroundColor: category.bgColor }]}>
+                <Ionicons name="information-circle" size={18} color={category.color} />
+              </View>
+              <Text style={styles.descTitle}>A cosa si riferisce</Text>
+              <Ionicons
+                name={descExpanded ? 'chevron-up' : 'chevron-down'}
+                size={16}
+                color={Colors.text.muted}
+              />
+            </View>
+            {descExpanded && (
+              <Text style={styles.descBody}>
+                {BUDGET_CATEGORY_DESCRIPTIONS[budget.category]}
+              </Text>
+            )}
+          </TouchableOpacity>
+        )}
 
         {/* Stats */}
         {stats && (
@@ -294,4 +322,35 @@ const styles = StyleSheet.create({
   txRight: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   txAmount: { ...Typography.bodyMedium, fontWeight: '600' },
   divider: { height: 1, backgroundColor: Colors.border.subtle, marginHorizontal: 16 },
+  descCard: {
+    backgroundColor: Colors.bg.card,
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+    borderColor: Colors.border.default,
+    padding: 16,
+    gap: 10,
+  },
+  descHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  descIconWrap: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  descTitle: {
+    ...Typography.bodyMedium,
+    color: Colors.text.primary,
+    fontWeight: '600',
+    flex: 1,
+  },
+  descBody: {
+    ...Typography.caption,
+    color: Colors.text.secondary,
+    lineHeight: 20,
+  },
 });

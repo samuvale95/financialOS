@@ -1,4 +1,4 @@
-import type { StoredBudget, OnboardingGoalId, EffortLevel, HousingType } from '../types';
+import type { StoredBudget, OnboardingGoalId, EffortLevel, HousingType, LifestyleProfile } from '../types';
 
 const BASE_RATIOS: Record<string, number> = {
   groceries: 0.12,
@@ -47,6 +47,40 @@ const GOAL_OVERRIDES: Record<OnboardingGoalId, Partial<Record<string, number>>> 
   emergenza: {},
 };
 
+const LIFESTYLE_MULTIPLIERS = {
+  sportFrequency: {
+    never: 0.5, occasional: 1.0, regular: 1.8, intensive: 2.5,
+  },
+  travelFrequency: {
+    never: 0.5, once_year: 1.0, few_times: 1.6, frequent: 2.5,
+  },
+  diningOutFrequency: {
+    rarely: 0.6, sometimes: 1.0, often: 1.5, daily: 2.2,
+  },
+} as const;
+
+export const BUDGET_CATEGORY_DESCRIPTIONS: Record<string, string> = {
+  groceries: 'Spese al supermercato, alimentari e market. Include la spesa settimanale e i negozi di vicinato.',
+  restaurants: 'Pasti fuori casa, pizzerie, ristoranti, bar e servizi di food delivery come Glovo e Deliveroo.',
+  food: 'Acquisti alimentari generici, gastronomie e negozi specializzati.',
+  fuel: 'Rifornimenti di benzina, gasolio e carburante per veicoli a motore.',
+  public_transport: 'Abbonamenti e biglietti per mezzi pubblici, taxi, Uber, treni e bus.',
+  transport: 'Parcheggi, autonoleggio e altre spese legate alla mobilità.',
+  shopping: 'Abbigliamento, elettronica, acquisti online e spese discrezionali.',
+  entertainment: 'Cinema, teatro, concerti, eventi e attività ricreative.',
+  sports: 'Palestra, attrezzatura sportiva, piscina, campi sportivi e abbonamenti fitness.',
+  health: 'Visite mediche, dentista, fisioterapia, analisi e spese sanitarie.',
+  pharmacy: 'Farmaci, parafarmacia, integratori e prodotti sanitari da banco.',
+  home: 'Manutenzione casa, arredamento, elettrodomestici e piccole riparazioni.',
+  rent: 'Affitto mensile, rata del mutuo, spese condominiali e canoni di locazione.',
+  utilities: 'Bollette di luce, gas, acqua, internet e telefonia.',
+  insurance: 'Premi assicurativi per auto, casa, vita e polizze varie.',
+  subscriptions: 'Abbonamenti digitali ricorrenti come Netflix, Spotify, Amazon Prime.',
+  travel: 'Voli, hotel, vacanze, Airbnb e spese di viaggio.',
+  education: 'Corsi, libri, università, formazione professionale e piattaforme di e-learning.',
+  other: 'Spese non categorizzate o di natura varia.',
+};
+
 // Moltiplicatori costo della vita per regione italiana
 const REGION_COST: Record<string, number> = {
   'Lombardia': 1.20, 'Lazio': 1.15, 'Toscana': 1.10,
@@ -64,6 +98,7 @@ export interface BudgetContext {
   housingMonthlyCost?: number;
   region?: string | null;
   dependents?: number;
+  lifestyleProfile?: LifestyleProfile;
 }
 
 export function calculateBudgets(
@@ -107,6 +142,33 @@ export function calculateBudgets(
     ratios.rent = Math.min(Math.max(housingCost / income, 0.10), 0.55);
   } else if (ctx.housingType === 'family') {
     delete ratios.rent; // vive con la famiglia, nessun affitto
+  }
+
+  // Lifestyle profile adjustments
+  const lp = ctx.lifestyleProfile;
+  if (lp) {
+    const sportMult = LIFESTYLE_MULTIPLIERS.sportFrequency[lp.sportFrequency] ?? 1.0;
+    if (ratios.sports !== undefined) ratios.sports *= sportMult;
+
+    const travelMult = LIFESTYLE_MULTIPLIERS.travelFrequency[lp.travelFrequency] ?? 1.0;
+    if (ratios.travel !== undefined) ratios.travel *= travelMult;
+    else if (travelMult > 1) ratios.travel = 0.04 * travelMult;
+
+    const diningMult = LIFESTYLE_MULTIPLIERS.diningOutFrequency[lp.diningOutFrequency] ?? 1.0;
+    if (ratios.restaurants !== undefined) ratios.restaurants *= diningMult;
+
+    // Hobbies: adjust entertainment and education
+    let entertainmentBonus = 0;
+    for (const hobby of lp.hobbies) {
+      if (hobby === 'gaming' || hobby === 'cinema' || hobby === 'music') {
+        entertainmentBonus += 0.015;
+      } else if (hobby === 'reading') {
+        ratios.education = Math.min((ratios.education ?? 0.04) + 0.01, 0.15);
+      }
+    }
+    if (entertainmentBonus > 0) {
+      ratios.entertainment = Math.min((ratios.entertainment ?? 0.04) + entertainmentBonus, 0.12);
+    }
   }
 
   // Costo della vita per regione (categorie sensibili al territorio)

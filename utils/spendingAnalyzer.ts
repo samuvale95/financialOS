@@ -2,6 +2,19 @@ import type { Transaction, Budget } from '../types';
 import type { CategoryId } from '../constants/categories';
 import { CATEGORIES } from '../constants/categories';
 
+export interface BudgetForecast {
+  category: CategoryId;
+  label: string;
+  icon: string;
+  color: string;
+  monthTotal: number;
+  budgetLimit: number;
+  paceRatio: number;
+  projectedEndOfMonth: number;
+  daysUntilOverBudget: number | null;
+  status: 'on_track' | 'at_risk' | 'over_pace';
+}
+
 export interface MerchantStat {
   name: string;
   count: number;
@@ -55,10 +68,19 @@ export interface SpendingAnalysis {
 }
 
 const EXPENSE_CATEGORY_IDS: CategoryId[] = [
-  'food', 'transport', 'shopping', 'entertainment',
-  'health', 'home', 'travel', 'education',
-  'subscriptions', 'utilities', 'other',
+  'groceries', 'restaurants', 'food',
+  'fuel', 'public_transport', 'transport',
+  'shopping', 'entertainment', 'sports',
+  'health', 'pharmacy', 'rent', 'home',
+  'utilities', 'insurance', 'subscriptions',
+  'travel', 'education', 'other',
 ];
+
+// Transfers between own accounts — excluded from all expense metrics
+const TRANSFER_CATEGORY: CategoryId = 'transfer';
+function isExpense(t: { amount: number; category: string }): boolean {
+  return t.amount < 0 && t.category !== TRANSFER_CATEGORY;
+}
 
 function getMonthPrefix(monthsAgo = 0): string {
   const d = new Date();
@@ -164,6 +186,54 @@ function computeScore(
   return { score: Math.min(100, Math.max(0, score)), factors };
 }
 
+export function getBudgetForecast(budgets: Budget[], transactions: Transaction[]): BudgetForecast[] {
+  const thisMonth = getMonthPrefix(0);
+  const today = new Date();
+  const daysInMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
+  const daysElapsed = Math.max(1, today.getDate());
+
+  const monthTx = transactions.filter((t) => t.date.startsWith(thisMonth) && isExpense(t));
+
+  return budgets
+    .filter((b) => b.limit > 0)
+    .map((b) => {
+      const cat = CATEGORIES[b.category];
+      const monthTotal = monthTx
+        .filter((t) => t.category === b.category)
+        .reduce((s, t) => s + Math.abs(t.amount), 0);
+      if (monthTotal === 0) return null;
+
+      const fractionUsed = monthTotal / b.limit;
+      const fractionElapsed = daysElapsed / daysInMonth;
+      const paceRatio = fractionUsed / fractionElapsed;
+      const dailyRate = monthTotal / daysElapsed;
+      const projectedEndOfMonth = dailyRate * daysInMonth;
+
+      let daysUntilOverBudget: number | null = null;
+      if (paceRatio > 1 && dailyRate > 0) {
+        daysUntilOverBudget = Math.max(0, Math.floor((b.limit - monthTotal) / dailyRate));
+      }
+
+      const status: BudgetForecast['status'] =
+        paceRatio > 1.2 ? 'over_pace' : paceRatio > 0.9 ? 'at_risk' : 'on_track';
+
+      return {
+        category: b.category,
+        label: cat?.label ?? b.category,
+        icon: cat?.icon ?? 'help-circle',
+        color: cat?.color ?? '#888',
+        monthTotal,
+        budgetLimit: b.limit,
+        paceRatio,
+        projectedEndOfMonth,
+        daysUntilOverBudget,
+        status,
+      } satisfies BudgetForecast;
+    })
+    .filter((f): f is BudgetForecast => f !== null && (f.status === 'at_risk' || f.status === 'over_pace'))
+    .sort((a, b) => b.paceRatio - a.paceRatio);
+}
+
 export function analyzeSpending(
   transactions: Transaction[],
   budgets: Budget[],
@@ -174,13 +244,13 @@ export function analyzeSpending(
   const thisMonthTx = transactions.filter((t) => t.date.startsWith(thisMonth));
   const lastMonthTx = transactions.filter((t) => t.date.startsWith(lastMonth));
 
-  const monthIncome = thisMonthTx.filter((t) => t.amount > 0).reduce((s, t) => s + t.amount, 0);
+  const monthIncome = thisMonthTx.filter((t) => t.amount > 0 && t.category !== TRANSFER_CATEGORY).reduce((s, t) => s + t.amount, 0);
   const totalExpenses = thisMonthTx
-    .filter((t) => t.amount < 0)
+    .filter(isExpense)
     .reduce((s, t) => s + Math.abs(t.amount), 0);
   const savingsRate = monthIncome > 0 ? ((monthIncome - totalExpenses) / monthIncome) * 100 : 0;
   const lastMonthExpenses = lastMonthTx
-    .filter((t) => t.amount < 0)
+    .filter(isExpense)
     .reduce((s, t) => s + Math.abs(t.amount), 0);
 
   const categories: CategoryAnalysis[] = EXPENSE_CATEGORY_IDS.map((category) => {

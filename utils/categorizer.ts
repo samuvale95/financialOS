@@ -2,31 +2,165 @@ import type { CategoryId } from '../constants/categories';
 
 // More specific rules must come before catch-all ones for the same domain
 const RULES: [CategoryId, string[]][] = [
-  ['salary',           ['stipendio', 'salario', 'busta paga', 'retribuzione', 'cedolino']],
-  ['freelance',        ['freelance', 'consulenza', 'prestazione', 'parcella', 'fattura', 'cliente', 'progetto']],
-  ['investment',       ['dividendo', 'cedola', 'interessi', 'rendimento', 'etf', 'azioni', 'borsa', 'trading']],
-  ['subscriptions',    ['netflix', 'spotify', 'amazon prime', 'disney', 'apple one', 'apple music', 'dazn', 'sky', 'now tv', 'abbonamento', 'subscription']],
-  ['utilities',        ['enel', 'a2a', 'eni gas', 'acea', 'hera', 'iren', 'tim', 'vodafone', 'iliad', 'wind', 'tre', 'fastweb', 'bolletta', 'luce', 'gas', 'acqua', 'internet', 'telefono']],
-  ['insurance',        ['assicurazione', 'assicurazioni', 'polizza', 'generali', 'allianz', 'unipol', 'rca', 'infortuni', 'premio assicurativo']],
-  ['travel',           ['airbnb', 'booking', 'ryanair', 'alitalia', 'ita airways', 'easyjet', 'blablacar', 'hotel', 'volo', 'aeroporto', 'vacanza', 'viaggio', 'agriturismo']],
-  ['pharmacy',         ['farmacia', 'parafarmacia', 'farmaco', 'medicinale', 'farmaci']],
-  ['health',           ['medico', 'dottore', 'dentista', 'ospedale', 'clinica', 'ottico', 'fisioterapia', 'wellness', 'analisi', 'visita', 'ambulatorio']],
-  ['sports',           ['palestra', 'fitlife', 'virgin active', 'mcfit', 'decathlon', 'nike', 'adidas', 'puma', 'sport', 'fitness', 'swimming', 'piscina', 'calcio', 'tennis']],
-  ['education',        ['udemy', 'coursera', 'libri', 'libreria', 'feltrinelli', 'mondadori', 'università', 'corso', 'scuola', 'master', 'formazione', 'amazon kindle']],
-  ['fuel',             ['q8', 'eni carburante', 'agip', 'ip stazione', 'esso', 'shell', 'tamoil', 'total', 'carburante', 'benzina', 'gasolio', 'diesel', 'rifornimento']],
-  ['public_transport', ['atm', 'atac', 'trenitalia', 'italo', 'frecciarossa', 'flixbus', 'autobus', 'metro', 'taxi', 'uber', 'bolt', 'free now', 'telepass', 'autostrada', 'bike sharing', 'monopattino']],
-  ['groceries',        ['esselunga', 'coop', 'conad', 'lidl', 'aldi', 'carrefour', 'pam', 'spar', 'despar', 'iper', 'eurospin', 'supermercato', 'alimentari', 'tigros', 'bennet', 'famila', 'penny market', 'md discount']],
-  ['restaurants',      ['ristorante', 'trattoria', 'osteria', 'pizzeria', 'sushi', 'bar ', 'caffè', 'caffe', 'mcdonalds', 'mcdonald', 'burger king', 'kfc', 'just eat', 'deliveroo', 'glovo', 'uber eats', 'takeaway', 'dominos']],
-  ['food',             ['alimentari', 'gastronomia']],
-  ['transport',        ['parcheggio', 'parking', 'autonoleggio', 'hertz', 'avis', 'europcar', 'rc auto']],
-  ['rent',             ['affitto', 'mutuo', 'canone locazione', 'locazione', 'condominio']],
-  ['home',             ['ikea', 'leroy merlin', 'casalinghi', 'arredamento', 'pulizie', 'riparazioni', 'elettrodomestici', 'obi']],
-  ['shopping',         ['zara', 'h&m', 'hm', 'uniqlo', 'mango', 'primark', 'amazon', 'ebay', 'zalando', 'asos', 'fnac', 'mediaworld', 'unieuro', 'euronics', 'apple store', 'samsung']],
-  ['entertainment',    ['cinema', 'teatro', 'concerto', 'museo', 'parco', 'bowling', 'escape room', 'eventi', 'biglietti', 'ticketmaster', 'ticketone', 'anteo', 'uci']],
+  ['transfer', [
+    'giroconto', 'giro conto', 'trasferimento tra conti', 'bonifico a me stesso',
+    'revolut top-up', 'transfer to revolut', 'n26 transfer', 'top up revolut',
+    'ricarica conto', 'ricarica prepagata', 'satispay top up', 'hype top up',
+    'ricarica hype', 'ricarica satispay',
+  ]],
+  ['salary', [
+    'stipendio', 'salario', 'busta paga', 'retribuzione', 'cedolino',
+    'tredicesima', 'quattordicesima', 'arretrati stipendio',
+  ]],
+  ['freelance', [
+    'freelance', 'consulenza', 'prestazione professionale', 'parcella',
+    'onorario', 'compenso', 'incasso fattura', 'fattura', 'cliente',
+  ]],
+  ['investment', [
+    'dividendo', 'cedola', 'interessi attivi', 'etf', 'azioni', 'fineco',
+    'directa', 'degiro', 'scalable', 'moneyfarm', 'btp', 'borsa', 'trading',
+    'rendimento', 'interessi', 'conto deposito',
+  ]],
+  ['taxes', [
+    'f24', 'imu', 'tari', 'tasi', 'bollo auto', 'bollo moto', 'canone rai',
+    'irpef', 'inps', 'inail', 'agenzia delle entrate', 'agenzia entrate',
+    'aci ', 'multa', 'verbale', 'sanzione amministrativa',
+  ]],
+  ['subscriptions', [
+    'netflix', 'spotify', 'amazon prime', 'disney+', 'disney plus', 'apple one',
+    'apple music', 'dazn', 'sky q', 'now tv', 'now streaming', 'mediaset infinity',
+    'youtube premium', 'google one', 'microsoft 365', 'office 365', 'adobe',
+    'dropbox', 'icloud', 'abbonamento', 'addebito ricorrente', 'subscription',
+  ]],
+  ['utilities', [
+    'enel', 'a2a', 'eni gas e luce', 'eni gas', 'acea', 'hera', 'iren',
+    'sorgenia', 'e.on', 'eon energia', 'tim', 'vodafone', 'iliad', 'wind tre',
+    'wind', 'fastweb', 'tiscali', 'bolletta luce', 'bolletta gas', 'bolletta acqua',
+    'bolletta telefono', 'fornitura energia', 'acquedotto', 'rifiuti', 'bolletta',
+    'luce', 'gas', 'internet', 'telefono fisso',
+  ]],
+  ['insurance', [
+    'assicurazione', 'assicurazioni', 'polizza', 'generali', 'allianz', 'unipol',
+    'zurich', 'cattolica', 'axa', 'reale mutua', 'rca auto', 'kasko',
+    'polizza vita', 'polizza casa', 'polizza salute', 'infortuni', 'premio assicurativo',
+  ]],
+  ['travel', [
+    'airbnb', 'booking.com', 'booking', 'ryanair', 'easyjet', 'vueling',
+    'ita airways', 'alitalia', 'wizz air', 'italo treno', 'frecciarossa',
+    'flixbus', 'blablacar', 'trivago', 'expedia', 'lastminute', 'edreams',
+    'hotel', 'hostel', 'volo', 'aeroporto', 'vacanza', 'rentalcars', 'viaggio',
+    'agriturismo',
+  ]],
+  ['pharmacy', [
+    'farmacia', 'parafarmacia', 'dr.max', 'lloyds farmacia', 'farmaco',
+    'medicinale', 'integratore', 'vitamina', 'erboristeria', 'sanitaria',
+    'farmaci',
+  ]],
+  ['health', [
+    'medico', 'dentista', 'odontoiatra', 'ospedale', 'policlinico', 'clinica',
+    'ottico', 'fisioterapia', 'osteopata', 'psicologo', 'analisi del sangue',
+    'esami del sangue', 'ecografia', 'radiologia', 'visita specialistica',
+    'ambulatorio', 'dottore', 'analisi', 'visita',
+  ]],
+  ['beauty', [
+    'parrucchiere', 'barbiere', 'estetista', 'centro estetico', 'sephora',
+    'douglas', 'kiko', 'mac cosmetics', 'profumeria', 'cosmetici', 'nail salon',
+    'manicure', 'epilazione', 'solarium', 'massaggio',
+  ]],
+  ['pets', [
+    'veterinario', 'clinica veterinaria', 'petshop', 'pet shop', 'zooplus',
+    'arcaplanet', 'isola dei tesori', 'mondocane', 'crocchette', 'toelettatura',
+    'pensione animali', 'dog sitter',
+  ]],
+  ['sports', [
+    'palestra', 'gym', 'fitness club', 'virgin active', 'mcfit', 'anytime fitness',
+    'piscina', 'calcio', 'tennis', 'padel', 'decathlon', 'sportler', 'intersport',
+    'nike', 'adidas', 'puma', 'asics', 'new balance', 'pilates', 'yoga',
+    'crossfit', 'spinning', 'fitlife', 'sport', 'fitness', 'nuoto',
+  ]],
+  ['education', [
+    'udemy', 'coursera', 'skillshare', 'masterclass', 'duolingo', 'babbel',
+    'libri', 'libreria', 'feltrinelli', 'mondadori store', 'hoepli', 'università',
+    'tasse universitarie', 'corso', 'tutor', 'scuola', 'asilo', 'nido',
+    'master', 'amazon kindle', 'formazione',
+  ]],
+  ['fuel', [
+    'q8', 'eni carburante', 'agip', 'ip stazione', 'esso', 'shell', 'tamoil',
+    'total energies', 'totalergies', 'benzina', 'gasolio', 'gpl', 'metano auto',
+    'rifornimento', 'enel x way', 'tesla supercharger', 'be charge', 'carburante',
+    'diesel',
+  ]],
+  ['public_transport', [
+    'atm ', 'atac', 'amt', 'gtt', 'actv', 'trenitalia', 'italo', 'frecciarossa',
+    'autobus', 'metro', 'metropolitana', 'tram', 'taxi', 'radiotaxi', 'uber',
+    'bolt', 'free now', 'telepass', 'autostrada', 'bike sharing', 'monopattino',
+    'bird', 'lime', 'car sharing', 'share now',
+  ]],
+  ['groceries', [
+    'esselunga', 'coop', 'conad', 'lidl', 'aldi', 'carrefour', 'pam', 'spar',
+    'despar', 'eurospar', 'iper', 'ipercoop', 'eurospin', 'penny market',
+    'md discount', 'todis', 'naturasi', 'il gigante', 'supermercato', 'ipermercato',
+    'spesa', 'tigros', 'bennet', 'famila',
+  ]],
+  ['restaurants', [
+    'ristorante', 'trattoria', 'osteria', 'pizzeria', 'sushi', 'poke', 'ramen',
+    'bar ', 'caffè', 'caffe', 'pasticceria', 'gelateria', 'mcdonald', 'mcdonalds',
+    'burger king', 'kfc', 'five guys', 'just eat', 'deliveroo', 'glovo',
+    'uber eats', 'starbucks', 'mensa', 'tavola calda', 'takeaway', 'dominos',
+  ]],
+  ['food', [
+    'alimentari', 'mercato', 'ortofrutticolo', 'pescheria', 'macelleria',
+    'salumeria', 'panificio', 'fornaio', 'minimarket', 'gastronomia',
+  ]],
+  ['transport', [
+    'parcheggio', 'parking', 'autonoleggio', 'hertz', 'avis', 'europcar',
+    'maggiore', 'sixt', 'officina', 'carrozzeria', 'gommista', 'pneumatici',
+    'revisione', 'tagliando', 'autoricambi', 'rc auto',
+  ]],
+  ['rent', [
+    'affitto', 'mutuo', 'canone locazione', 'locazione', 'condominio',
+    'bonifico affitto', 'canone affitto', 'pagamento affitto', 'rata mutuo',
+    'mensile mutuo', 'quota condominiale', 'spese condominiali',
+    'deposito cauzionale', 'agenzia immobiliare',
+  ]],
+  ['home', [
+    'ikea', 'leroy merlin', 'obi', 'bricoman', 'bricocenter', 'casalinghi',
+    'arredamento', 'ferramenta', 'pulizie', 'colf', 'badante', 'idraulico',
+    'elettricista', 'falegname', 'zara home', 'trasloco', 'sgombero',
+    'riparazioni', 'elettrodomestici',
+  ]],
+  ['shopping', [
+    'zara', 'h&m', 'hm', 'uniqlo', 'mango', 'primark', 'ovs', 'gucci',
+    'prada', 'armani', 'amazon', 'ebay', 'zalando', 'asos', 'fnac',
+    'mediaworld', 'unieuro', 'euronics', 'apple store', 'samsung', 'vinted',
+    'yoox', 'farfetch',
+  ]],
+  ['entertainment', [
+    'cinema', 'uci cinemas', 'teatro', 'opera', 'concerto', 'museo',
+    'parco divertimenti', 'gardaland', 'mirabilandia', 'bowling', 'escape room',
+    'videogiochi', 'steam', 'playstation store', 'xbox', 'nintendo',
+    'ticketmaster', 'ticketone', 'anteo', 'uci',
+  ]],
 ];
 
 export function categorize(description: string): CategoryId {
   const lower = description.toLowerCase();
+  // Early exit: affitto/mutuo/condominio → always rent
+  if (lower.includes('affitto') || lower.includes('mutuo') || lower.includes('condominio')) {
+    return 'rent';
+  }
+  // Early exit: giroconto → always transfer
+  if (lower.includes('giroconto') || lower.includes('giro conto')) {
+    return 'transfer';
+  }
+  // Early exit: taxes
+  if (
+    lower.includes('f24') || lower.includes('imu') || lower.includes('tari') ||
+    lower.includes('tasi') || lower.includes('bollo auto') ||
+    lower.includes('bollo moto') || lower.includes('canone rai')
+  ) {
+    return 'taxes';
+  }
   for (const [cat, keywords] of RULES) {
     for (const kw of keywords) {
       if (lower.includes(kw)) return cat;

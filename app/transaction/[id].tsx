@@ -1,18 +1,24 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   ScrollView,
   TouchableOpacity,
+  Modal,
+  Pressable,
+  FlatList,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import * as Haptics from 'expo-haptics';
 import { Colors, Typography, Radius, Spacing } from '../../constants/theme';
-import { CATEGORIES } from '../../constants/categories';
+import { CATEGORIES, EXPENSE_CATEGORIES } from '../../constants/categories';
+import type { CategoryId } from '../../constants/categories';
 import { ProgressBar } from '../../components/ui/ProgressBar';
 import { useData } from '../../contexts/DataContext';
+import { getMerchantKey } from '../../utils/categorizer';
 
 function formatAmount(amount: number): string {
   const sign = amount >= 0 ? '+' : '-';
@@ -29,9 +35,65 @@ function formatFullDate(dateStr: string): string {
   });
 }
 
+// ── Category Picker Modal ─────────────────────────────────────────────────────
+
+function CategoryPickerModal({
+  visible,
+  currentCategory,
+  onSelect,
+  onClose,
+}: {
+  visible: boolean;
+  currentCategory: string;
+  onSelect: (cat: CategoryId) => void;
+  onClose: () => void;
+}) {
+  return (
+    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+      <Pressable style={cpStyles.overlay} onPress={onClose}>
+        <Pressable style={cpStyles.sheet} onPress={() => {}}>
+          <View style={cpStyles.handle} />
+          <Text style={cpStyles.sheetTitle}>Cambia categoria</Text>
+          <FlatList
+            data={EXPENSE_CATEGORIES}
+            numColumns={3}
+            keyExtractor={(item) => item.id}
+            contentContainerStyle={cpStyles.grid}
+            columnWrapperStyle={{ gap: 10 }}
+            renderItem={({ item }) => {
+              const isActive = item.id === currentCategory;
+              return (
+                <TouchableOpacity
+                  style={[
+                    cpStyles.catItem,
+                    isActive && { borderColor: item.color, backgroundColor: item.bgColor },
+                  ]}
+                  activeOpacity={0.7}
+                  onPress={() => onSelect(item.id as CategoryId)}
+                >
+                  <View style={[cpStyles.catIcon, { backgroundColor: item.bgColor }]}>
+                    <Ionicons name={item.icon as any} size={20} color={item.color} />
+                  </View>
+                  <Text style={[cpStyles.catLabel, isActive && { color: item.color }]} numberOfLines={1}>
+                    {item.label}
+                  </Text>
+                </TouchableOpacity>
+              );
+            }}
+          />
+        </Pressable>
+      </Pressable>
+    </Modal>
+  );
+}
+
+// ── Main screen ───────────────────────────────────────────────────────────────
+
 export default function TransactionDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const { transactions, budgets } = useData();
+  const { transactions, budgets, setMerchantRule } = useData();
+  const [showCategoryPicker, setShowCategoryPicker] = useState(false);
+  const [reclassifyFeedback, setReclassifyFeedback] = useState<string | null>(null);
 
   const t = transactions.find((tx) => tx.id === id);
 
@@ -57,6 +119,20 @@ export default function TransactionDetailScreen() {
   const similar = transactions
     .filter((tx) => tx.category === t.category && tx.id !== t.id)
     .slice(0, 3);
+
+  const handleReclassify = (newCategoryId: CategoryId) => {
+    const merchantKey = getMerchantKey(t);
+    const affectedCount = transactions.filter(
+      (tx) => getMerchantKey(tx) === merchantKey && tx.id !== t.id
+    ).length;
+    setMerchantRule(merchantKey, newCategoryId);
+    setShowCategoryPicker(false);
+    setReclassifyFeedback(
+      `Categoria aggiornata.${affectedCount > 0 ? ` ${affectedCount} transazioni simili riclassificate.` : ''}`
+    );
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    setTimeout(() => setReclassifyFeedback(null), 4000);
+  };
 
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
@@ -112,6 +188,31 @@ export default function TransactionDetailScreen() {
             </>
           )}
         </View>
+
+        {/* Reclassify */}
+        {t.amount < 0 && (
+          <TouchableOpacity
+            style={styles.changeCatBtn}
+            activeOpacity={0.7}
+            onPress={() => setShowCategoryPicker(true)}
+          >
+            <Ionicons name="swap-horizontal-outline" size={16} color={Colors.accent.primary} />
+            <Text style={styles.changeCatBtnText}>Cambia categoria</Text>
+          </TouchableOpacity>
+        )}
+        {reclassifyFeedback && (
+          <View style={styles.feedbackBanner}>
+            <Ionicons name="checkmark-circle" size={16} color={Colors.semantic.success} />
+            <Text style={styles.feedbackText}>{reclassifyFeedback}</Text>
+          </View>
+        )}
+
+        <CategoryPickerModal
+          visible={showCategoryPicker}
+          currentCategory={t.category}
+          onSelect={handleReclassify}
+          onClose={() => setShowCategoryPicker(false)}
+        />
 
         {/* Budget Section */}
         {budget && budgetProgress !== null && (
@@ -273,4 +374,99 @@ const styles = StyleSheet.create({
   },
   simDesc: { ...Typography.bodyMedium, color: Colors.text.primary, flex: 1 },
   simAmount: { ...Typography.bodyMedium, fontWeight: '600' },
+  changeCatBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: Colors.accent.glow,
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+    borderColor: Colors.border.accent,
+    paddingHorizontal: 16,
+    paddingVertical: 13,
+    justifyContent: 'center',
+  },
+  changeCatBtnText: {
+    ...Typography.bodyMedium,
+    color: Colors.accent.primary,
+    fontWeight: '600',
+  },
+  feedbackBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: Colors.semantic.success + '15',
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: Colors.semantic.success + '40',
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+  },
+  feedbackText: {
+    ...Typography.caption,
+    color: Colors.semantic.success,
+    fontWeight: '600',
+    flex: 1,
+  },
+});
+
+const cpStyles = StyleSheet.create({
+  overlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    justifyContent: 'flex-end',
+  },
+  sheet: {
+    backgroundColor: Colors.bg.card,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    paddingBottom: 32,
+    maxHeight: '75%',
+  },
+  handle: {
+    width: 36,
+    height: 4,
+    backgroundColor: Colors.border.default,
+    borderRadius: 2,
+    alignSelf: 'center',
+    marginTop: 12,
+    marginBottom: 4,
+  },
+  sheetTitle: {
+    ...Typography.h3,
+    color: Colors.text.primary,
+    textAlign: 'center',
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border.subtle,
+    marginBottom: 4,
+  },
+  grid: {
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    gap: 10,
+  },
+  catItem: {
+    flex: 1,
+    alignItems: 'center',
+    gap: 6,
+    padding: 10,
+    borderRadius: Radius.md,
+    backgroundColor: Colors.bg.elevated,
+    borderWidth: 1,
+    borderColor: Colors.border.default,
+  },
+  catIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 10,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  catLabel: {
+    ...Typography.micro,
+    color: Colors.text.secondary,
+    textAlign: 'center',
+    fontWeight: '500',
+  },
 });

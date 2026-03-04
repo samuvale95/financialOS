@@ -8,8 +8,10 @@ import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import { Colors, Typography, Radius } from '../../constants/theme';
 import { useData } from '../../contexts/DataContext';
-import { analyzeSpending } from '../../utils/spendingAnalyzer';
-import { generateCoachQuestions } from '../../utils/coachEngine';
+import { analyzeSpending, getBudgetForecast } from '../../utils/spendingAnalyzer';
+import type { BudgetForecast } from '../../utils/spendingAnalyzer';
+import { generateCoachQuestions, generatePersistentInsights } from '../../utils/coachEngine';
+import type { PersistentInsight } from '../../utils/coachEngine';
 import type { CategoryAnalysis } from '../../utils/spendingAnalyzer';
 import type { CoachQuestion, CoachRecommendation } from '../../utils/coachEngine';
 
@@ -323,6 +325,95 @@ function RecommendationCard({ rec, onNext }: { rec: CoachRecommendation; onNext:
   );
 }
 
+// ── Budget Forecast Card ──────────────────────────────────────────────────────
+
+function BudgetForecastCard({ forecasts }: { forecasts: BudgetForecast[] }) {
+  const top = forecasts.filter((f) => f.status === 'at_risk' || f.status === 'over_pace').slice(0, 3);
+  if (top.length === 0) return null;
+
+  return (
+    <View>
+      <Text style={s.sectionTitlePlain}>Previsioni budget</Text>
+      <View style={s.forecastCard}>
+        {top.map((f) => {
+          const rowColor = f.status === 'over_pace' ? '#FF6B6B' : '#FFB347';
+          return (
+            <View key={f.category} style={[s.forecastRow, { borderLeftColor: rowColor }]}>
+              <View style={s.forecastInfo}>
+                <Text style={s.forecastLabel}>
+                  <Ionicons name={f.icon as any} size={13} color={f.color} /> {f.label}
+                </Text>
+                <Text style={s.forecastBody}>
+                  {f.daysUntilOverBudget !== null
+                    ? `Sfori tra ${f.daysUntilOverBudget} giorni`
+                    : `Proiezione: €${f.projectedEndOfMonth.toFixed(0)}`}
+                </Text>
+              </View>
+              <Text style={[s.forecastPace, { color: rowColor }]}>
+                {Math.round(f.paceRatio * 100)}%
+              </Text>
+            </View>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
+
+// ── Persistent Insights Panel ─────────────────────────────────────────────────
+
+function PersistentInsightsPanel({ insights }: { insights: PersistentInsight[] }) {
+  if (insights.length === 0) return null;
+
+  return (
+    <View>
+      <Text style={s.sectionTitlePlain}>Situazione attuale</Text>
+      <View style={s.tipsPanel}>
+        {insights.map((ins) => {
+          const borderColor =
+            ins.trend === 'positive' ? '#00D68F' :
+            ins.trend === 'negative' ? '#FF6B6B' :
+            '#FFB347';
+          return (
+            <View key={ins.id} style={[s.tipRow, { borderLeftColor: borderColor }]}>
+              <View style={[s.tipIconWrap, { backgroundColor: ins.iconColor + '20' }]}>
+                <Ionicons name={ins.icon as any} size={16} color={ins.iconColor} />
+              </View>
+              <View style={s.tipBody}>
+                <Text style={s.tipTitle}>{ins.title}</Text>
+                <Text style={s.tipText}>{ins.body}</Text>
+              </View>
+            </View>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
+
+// ── Unclassified Card ─────────────────────────────────────────────────────────
+
+function UnclassifiedCard({ count }: { count: number }) {
+  if (count === 0) return null;
+  return (
+    <View style={s.unclassCard}>
+      <View style={s.unclassLeft}>
+        <Text style={s.unclassTitle}>
+          {count} {count === 1 ? 'spesa' : 'spese'} da classificare
+        </Text>
+        <Text style={s.unclassSub}>Riclassifica per migliorare le analisi future</Text>
+      </View>
+      <TouchableOpacity
+        style={s.unclassBtn}
+        activeOpacity={0.8}
+        onPress={() => router.push('/(tabs)/spese')}
+      >
+        <Text style={s.unclassBtnText}>Classifica →</Text>
+      </TouchableOpacity>
+    </View>
+  );
+}
+
 // ── Main screen ───────────────────────────────────────────────────────────────
 
 export default function CoachScreen() {
@@ -336,6 +427,13 @@ export default function CoachScreen() {
   const questions = useMemo(
     () => generateCoachQuestions(analysis, insightProfile),
     [analysis, insightProfile],
+  );
+
+  const budgetForecasts = useMemo(() => getBudgetForecast(budgets, transactions), [budgets, transactions]);
+  const persistentInsights = useMemo(() => generatePersistentInsights(analysis), [analysis]);
+  const unclassifiedCount = useMemo(
+    () => transactions.filter((t) => t.category === 'other' && t.amount < 0).length,
+    [transactions]
   );
 
   const [questionIdx, setQuestionIdx] = useState(0);
@@ -384,7 +482,7 @@ export default function CoachScreen() {
             <Text style={s.title}>Coach AI</Text>
             <Text style={s.subtitle}>
               {hasData
-                ? `Analisi ${analysis.analysisMonth.replace('-', '/')}`
+                ? `Analisi del mese di ${new Date(analysis.analysisMonth + '-01').toLocaleDateString('it-IT', { month: 'long', year: 'numeric' })}`
                 : 'Analisi personalizzata'}
             </Text>
           </View>
@@ -482,6 +580,10 @@ export default function CoachScreen() {
               </View>
             )}
 
+            <UnclassifiedCard count={unclassifiedCount} />
+            <BudgetForecastCard forecasts={budgetForecasts} />
+            <PersistentInsightsPanel insights={persistentInsights} />
+
             {/* Summary stats bar */}
             <View style={s.statsBar}>
               <View style={s.statItem}>
@@ -506,6 +608,59 @@ export default function CoachScreen() {
                 <Text style={s.statLabel}>Budget superati</Text>
               </View>
             </View>
+
+            {/* Monthly insights highlights */}
+            {visibleCategories.length > 0 && (() => {
+              const overBudget = [...analysis.problemCategories].sort((a, b) => b.budgetProgress - a.budgetProgress)[0];
+              const bigIncrease = [...analysis.categories]
+                .filter((c) => c.vsLastMonth > 30 && c.prevMonthTotal > 0 && c.monthTotal > 20)
+                .sort((a, b) => b.vsLastMonth - a.vsLastMonth)[0];
+              const bestSaving = [...analysis.categories]
+                .filter((c) => c.vsLastMonth < -15 && c.prevMonthTotal > 0 && c.monthTotal > 0)
+                .sort((a, b) => a.vsLastMonth - b.vsLastMonth)[0];
+              const highlights = [overBudget, bigIncrease, bestSaving].filter(Boolean);
+              if (highlights.length === 0) return null;
+              return (
+                <View>
+                  <Text style={s.sectionTitlePlain}>Highlights di questo mese</Text>
+                  <View style={s.highlightList}>
+                    {overBudget && (
+                      <View style={[s.highlightRow, { borderLeftColor: Colors.semantic.danger }]}>
+                        <Ionicons name="alert-circle" size={16} color={Colors.semantic.danger} />
+                        <View style={s.highlightInfo}>
+                          <Text style={s.highlightLabel}>Categoria più sopra budget</Text>
+                          <Text style={s.highlightValue}>
+                            {overBudget.label}: {Math.round(overBudget.budgetProgress * 100)}% utilizzato
+                          </Text>
+                        </View>
+                      </View>
+                    )}
+                    {bigIncrease && (
+                      <View style={[s.highlightRow, { borderLeftColor: Colors.semantic.warning }]}>
+                        <Ionicons name="trending-up" size={16} color={Colors.semantic.warning} />
+                        <View style={s.highlightInfo}>
+                          <Text style={s.highlightLabel}>Maggior aumento vs mese scorso</Text>
+                          <Text style={s.highlightValue}>
+                            {bigIncrease.label}: +{Math.round(bigIncrease.vsLastMonth)}%
+                          </Text>
+                        </View>
+                      </View>
+                    )}
+                    {bestSaving && (
+                      <View style={[s.highlightRow, { borderLeftColor: Colors.semantic.success }]}>
+                        <Ionicons name="leaf" size={16} color={Colors.semantic.success} />
+                        <View style={s.highlightInfo}>
+                          <Text style={s.highlightLabel}>Maggior risparmio vs mese scorso</Text>
+                          <Text style={s.highlightValue}>
+                            {bestSaving.label}: {Math.round(bestSaving.vsLastMonth)}%
+                          </Text>
+                        </View>
+                      </View>
+                    )}
+                  </View>
+                </View>
+              );
+            })()}
 
             {/* Category analysis */}
             {visibleCategories.length > 0 && (
@@ -761,4 +916,93 @@ const s = StyleSheet.create({
   },
   allDoneTitle: { ...Typography.h3, color: Colors.text.primary },
   allDoneBody: { ...Typography.caption, color: Colors.text.secondary, textAlign: 'center', lineHeight: 20 },
+
+  // Highlights
+  highlightList: { gap: 8 },
+  highlightRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    backgroundColor: Colors.bg.card,
+    borderRadius: Radius.md, padding: 12,
+    borderWidth: 1, borderColor: Colors.border.default,
+    borderLeftWidth: 3,
+  },
+  highlightInfo: { flex: 1, gap: 2 },
+  highlightLabel: { ...Typography.micro, color: Colors.text.secondary },
+  highlightValue: { ...Typography.caption, color: Colors.text.primary, fontWeight: '600' },
+
+  // Budget Forecast
+  forecastCard: {
+    backgroundColor: Colors.bg.card,
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+    borderColor: Colors.semantic.warning + '40',
+    overflow: 'hidden',
+    gap: 0,
+  },
+  forecastRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderLeftWidth: 3,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border.subtle,
+  },
+  forecastInfo: { flex: 1, gap: 3 },
+  forecastLabel: { ...Typography.caption, color: Colors.text.primary, fontWeight: '600' },
+  forecastBody: { ...Typography.micro, color: Colors.text.secondary },
+  forecastPace: { ...Typography.bodyMedium, fontWeight: '800' },
+
+  // Persistent Insights Panel
+  tipsPanel: {
+    backgroundColor: Colors.bg.card,
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+    borderColor: Colors.border.default,
+    overflow: 'hidden',
+  },
+  tipRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderLeftWidth: 3,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border.subtle,
+  },
+  tipIconWrap: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
+    flexShrink: 0,
+  },
+  tipBody: { flex: 1, gap: 3 },
+  tipTitle: { ...Typography.caption, color: Colors.text.primary, fontWeight: '700' },
+  tipText: { ...Typography.micro, color: Colors.text.secondary, lineHeight: 16 },
+
+  // Unclassified card
+  unclassCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    backgroundColor: Colors.semantic.warning + '10',
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+    borderColor: Colors.semantic.warning + '40',
+    padding: 14,
+  },
+  unclassLeft: { flex: 1, gap: 3 },
+  unclassTitle: { ...Typography.caption, color: Colors.semantic.warning, fontWeight: '700' },
+  unclassSub: { ...Typography.micro, color: Colors.text.secondary },
+  unclassBtn: {
+    backgroundColor: Colors.semantic.warning,
+    borderRadius: Radius.md,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  unclassBtnText: { ...Typography.caption, color: '#000', fontWeight: '700' },
 });

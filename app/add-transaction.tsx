@@ -112,7 +112,7 @@ export default function AddTransactionScreen() {
       Alert.alert('Split non valido', 'La somma degli split supera l\'importo totale.');
       return;
     }
-    if (isTransfer && !transferToAccountId) {
+    if (isTransfer && accounts.length > 0 && !transferToAccountId) {
       Alert.alert('Conto destinazione mancante', 'Seleziona il conto di destinazione.');
       return;
     }
@@ -123,7 +123,7 @@ export default function AddTransactionScreen() {
     addTransaction({
       date: today,
       amount: finalAmount,
-      description: description.trim() || (category ? CATEGORIES[category].label : 'Transazione'),
+      description: description.trim() || (isTransfer ? 'Giroconto' : (category ? CATEGORIES[category].label : 'Transazione')),
       category: isTransfer ? 'other' : (category ?? 'other'),
       merchant: merchant.trim() || undefined,
       note: note.trim() || undefined,
@@ -228,28 +228,8 @@ export default function AddTransactionScreen() {
               ))}
             </ScrollView>
 
-            {/* Transfer toggle */}
-            {accountId && (
-              <View style={styles.transferRow}>
-                <TouchableOpacity
-                  style={[styles.toggleBtn, isTransfer && styles.toggleBtnActive]}
-                  onPress={() => { setIsTransfer((v) => !v); Haptics.selectionAsync(); }}
-                  activeOpacity={0.7}
-                >
-                  <Ionicons
-                    name="swap-horizontal"
-                    size={16}
-                    color={isTransfer ? Colors.accent.primary : Colors.text.muted}
-                  />
-                  <Text style={[styles.toggleLabel, isTransfer && styles.toggleLabelActive]}>
-                    Trasferimento tra conti
-                  </Text>
-                </TouchableOpacity>
-              </View>
-            )}
-
             {/* Transfer destination */}
-            {isTransfer && (
+            {isTransfer && accounts.length > 1 && (
               <View style={styles.section}>
                 <Text style={styles.sectionLabel}>Conto destinazione</Text>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
@@ -272,6 +252,26 @@ export default function AddTransactionScreen() {
             )}
           </View>
         )}
+
+        {/* Transfer toggle — always visible */}
+        <View style={styles.section}>
+          <View style={styles.transferRow}>
+            <TouchableOpacity
+              style={[styles.toggleBtn, isTransfer && styles.toggleBtnActive]}
+              onPress={() => { setIsTransfer((v) => !v); Haptics.selectionAsync(); }}
+              activeOpacity={0.7}
+            >
+              <Ionicons
+                name="swap-horizontal"
+                size={16}
+                color={isTransfer ? Colors.accent.primary : Colors.text.muted}
+              />
+              <Text style={[styles.toggleLabel, isTransfer && styles.toggleLabelActive]}>
+                Giroconto / Trasferimento
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </View>
 
         {/* Category grid — hidden for transfers */}
         {!isTransfer && (

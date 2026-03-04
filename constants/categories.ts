@@ -17,9 +17,13 @@ export type CategoryId =
   | 'subscriptions'
   | 'travel'
   | 'education'
+  | 'beauty'
+  | 'pets'
+  | 'taxes'
   | 'salary'
   | 'freelance'
   | 'investment'
+  | 'transfer'
   | 'other';
 
 export interface Category {
@@ -176,6 +180,30 @@ export const CATEGORIES: Record<CategoryId, Category> = {
     bgColor: 'rgba(255,214,10,0.15)',
     type: 'expense',
   },
+  beauty: {
+    id: 'beauty',
+    label: 'Bellezza & Cura',
+    icon: 'color-wand',
+    color: '#FF4D94',
+    bgColor: 'rgba(255,77,148,0.15)',
+    type: 'expense',
+  },
+  pets: {
+    id: 'pets',
+    label: 'Animali',
+    icon: 'paw',
+    color: '#A0845C',
+    bgColor: 'rgba(160,132,92,0.15)',
+    type: 'expense',
+  },
+  taxes: {
+    id: 'taxes',
+    label: 'Tasse & Imposte',
+    icon: 'document-text',
+    color: '#8F95A3',
+    bgColor: 'rgba(143,149,163,0.15)',
+    type: 'expense',
+  },
   salary: {
     id: 'salary',
     label: 'Stipendio',
@@ -198,6 +226,14 @@ export const CATEGORIES: Record<CategoryId, Category> = {
     icon: 'trending-up',
     color: '#6C63FF',
     bgColor: 'rgba(108,99,255,0.15)',
+    type: 'both',
+  },
+  transfer: {
+    id: 'transfer',
+    label: 'Giroconto',
+    icon: 'swap-horizontal',
+    color: '#5E9BF0',
+    bgColor: 'rgba(94,155,240,0.15)',
     type: 'both',
   },
   other: {

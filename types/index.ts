@@ -108,6 +108,19 @@ export interface BankAccount {
   lastUpdated: string;
 }
 
+// ── Lifestyle profile ────────────────────────────────────────────────────────
+
+export type SportFrequency = 'never' | 'occasional' | 'regular' | 'intensive';
+export type TravelFrequency = 'never' | 'once_year' | 'few_times' | 'frequent';
+export type DiningFrequency = 'rarely' | 'sometimes' | 'often' | 'daily';
+
+export interface LifestyleProfile {
+  sportFrequency: SportFrequency;
+  travelFrequency: TravelFrequency;
+  diningOutFrequency: DiningFrequency;
+  hobbies: string[]; // 'gaming' | 'music' | 'cinema' | 'reading' | 'photography' | 'art' | 'other'
+}
+
 // ── Onboarding enums ──────────────────────────────────────────────────────────
 
 export type OnboardingGoalId =
@@ -171,4 +184,5 @@ export interface OnboardingData {
   userProfile?: UserProfile;
   housingInfo?: HousingInfo;
   workInfo?: WorkInfo;
+  lifestyleProfile?: LifestyleProfile;
 }

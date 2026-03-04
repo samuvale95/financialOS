@@ -41,6 +41,7 @@ import { getMerchantKey } from '../utils/categorizer';
 import type {
   BankAccount, OnboardingGoalId, EffortLevel, IncomeSource, IncomeType,
   StoredBudget, Asset, FamilyStatus, HousingType, WorkType, IncomeStability,
+  LifestyleProfile, SportFrequency, TravelFrequency, DiningFrequency,
 } from '../types';
 import type { Transaction } from '../types';
 
@@ -99,6 +100,10 @@ interface WizardState {
   budgetEdits: Record<string, string>;
   // Step 10: Merchant-level overrides (merchantKey → CategoryId), applied to all matching transactions
   merchantOverrides: Record<string, CategoryId>;
+  // Step 2: Stile di vita
+  lifestyleProfile: LifestyleProfile;
+  // Emergency fund
+  emergencyFundMonths: 3 | 6;
 }
 
 const INIT_STATE: WizardState = {
@@ -107,12 +112,18 @@ const INIT_STATE: WizardState = {
   region: null, housingType: null, housingCost: '',
   workType: null, workSector: null, incomeStability: null,
   incomeSources: [], accounts: [], hasCrypto: null, cryptoAssets: [], hasInvestments: null, assets: [],
-  mainGoal: null, effortLevel: null, importedFiles: [], budgetEdits: {}, merchantOverrides: {},
+  mainGoal: null, effortLevel: null, importedFiles: [], budgetEdits: {}, merchantOverrides: {}, emergencyFundMonths: 3,
+  lifestyleProfile: {
+    sportFrequency: 'occasional',
+    travelFrequency: 'once_year',
+    diningOutFrequency: 'sometimes',
+    hobbies: [],
+  },
 };
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const PROGRESS_STEPS = 9; // steps 1–9 show progress bar
+const PROGRESS_STEPS = 10; // steps 1–10 show progress bar
 
 const ITALIAN_REGIONS = [
   'Abruzzo', 'Basilicata', 'Calabria', 'Campania', 'Emilia-Romagna',
@@ -180,6 +191,36 @@ const EFFORT_OPTIONS: { id: EffortLevel; label: string; emoji: string; desc: str
   { id: 'leggero', label: 'Leggero', emoji: '😌', desc: 'Piccoli aggiustamenti senza rinunce', saving: '3–5%' },
   { id: 'moderato', label: 'Moderato', emoji: '💪', desc: 'Equilibrio tra risparmio e qualità di vita', saving: '15–20%' },
   { id: 'intenso', label: 'Intenso', emoji: '🔥', desc: 'Massimizzare il risparmio, obiettivo rapido', saving: '30%+' },
+];
+
+const SPORT_OPTIONS: { id: SportFrequency; label: string; emoji: string }[] = [
+  { id: 'never', label: 'Mai', emoji: '😴' },
+  { id: 'occasional', label: 'Raramente', emoji: '🚶' },
+  { id: 'regular', label: '2-3x/settimana', emoji: '🏋️' },
+  { id: 'intensive', label: 'Ogni giorno', emoji: '🏆' },
+];
+
+const TRAVEL_OPTIONS: { id: TravelFrequency; label: string; emoji: string }[] = [
+  { id: 'never', label: 'Non viaggio', emoji: '🏠' },
+  { id: 'once_year', label: '1 volta/anno', emoji: '✈️' },
+  { id: 'few_times', label: '2-4 volte', emoji: '🌍' },
+  { id: 'frequent', label: 'Spesso', emoji: '🧳' },
+];
+
+const DINING_OPTIONS: { id: DiningFrequency; label: string; emoji: string }[] = [
+  { id: 'rarely', label: 'Cucino quasi sempre', emoji: '👨‍🍳' },
+  { id: 'sometimes', label: '1-2x/settimana', emoji: '🍽️' },
+  { id: 'often', label: '3-4x/settimana', emoji: '🍕' },
+  { id: 'daily', label: 'Quasi ogni giorno', emoji: '🍱' },
+];
+
+const HOBBY_OPTIONS: { id: string; label: string; emoji: string }[] = [
+  { id: 'gaming', label: 'Gaming', emoji: '🎮' },
+  { id: 'music', label: 'Musica', emoji: '🎵' },
+  { id: 'cinema', label: 'Cinema', emoji: '🎬' },
+  { id: 'reading', label: 'Lettura', emoji: '📚' },
+  { id: 'photography', label: 'Fotografia', emoji: '📸' },
+  { id: 'art', label: 'Arte', emoji: '🎨' },
 ];
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -367,15 +408,16 @@ function isStepValid(state: WizardState): boolean {
   switch (state.step) {
     case 0: return true;
     case 1: return state.familyStatus !== null;
-    case 2: return state.housingType !== null;
-    case 3: return state.workType !== null && state.incomeStability !== null;
-    case 4: return state.incomeSources.length > 0;
-    case 5: return true;
-    case 6: return state.hasCrypto !== null;
-    case 7: return state.hasInvestments !== null;
-    case 8: return state.mainGoal !== null && state.effortLevel !== null;
-    case 9: return true;
+    case 2: return true; // Lifestyle — always valid (all fields have defaults)
+    case 3: return state.housingType !== null;
+    case 4: return state.workType !== null && state.incomeStability !== null;
+    case 5: return state.incomeSources.length > 0;
+    case 6: return true;
+    case 7: return state.hasCrypto !== null;
+    case 8: return state.hasInvestments !== null;
+    case 9: return state.mainGoal !== null && state.effortLevel !== null;
     case 10: return true;
+    case 11: return true;
     default: return true;
   }
 }
@@ -820,7 +862,7 @@ function IncomeForm({ onAdd }: { onAdd: (s: IncomeSource) => void }) {
 // ── Main wizard ───────────────────────────────────────────────────────────────
 
 export default function OnboardingScreen() {
-  const { addAccount, addAsset, addTransactions, setBudgetLimit, setMerchantRule } = useData();
+  const { addAccount, addAsset, addTransactions, setBudgetLimit, setMerchantRule, addGoal } = useData();
   const [state, setState] = useState<WizardState>(INIT_STATE);
   const [importing, setImporting] = useState(false);
   const [regionSearch, setRegionSearch] = useState('');
@@ -840,8 +882,8 @@ export default function OnboardingScreen() {
     Keyboard.dismiss();
     setState(s => {
       const next = { ...s, step: s.step + 1 };
-      // Initialize budget edits when entering step 9
-      if (next.step === 9 && Object.keys(next.budgetEdits).length === 0) {
+      // Initialize budget edits when entering step 10
+      if (next.step === 10 && Object.keys(next.budgetEdits).length === 0) {
         const income = totalMonthlyIncome(next.incomeSources);
         if (income > 0) {
           const ctx: BudgetContext = {
@@ -850,6 +892,7 @@ export default function OnboardingScreen() {
             housingMonthlyCost: parseFloat(next.housingCost.replace(',', '.')) || 0,
             region: next.region,
             dependents: next.dependents,
+            lifestyleProfile: next.lifestyleProfile,
           };
           const budgets = calculateBudgets(income, next.mainGoal ? [next.mainGoal] : [], next.effortLevel ?? 'moderato', ctx);
           const edits: Record<string, string> = {};
@@ -878,9 +921,10 @@ export default function OnboardingScreen() {
       housingMonthlyCost: parseFloat(state.housingCost.replace(',', '.')) || 0,
       region: state.region,
       dependents: state.dependents,
+      lifestyleProfile: state.lifestyleProfile,
     };
     return calculateBudgets(income, state.mainGoal ? [state.mainGoal] : [], state.effortLevel ?? 'moderato', ctx);
-  }, [income, state.householdSize, state.housingType, state.housingCost, state.region, state.dependents, state.mainGoal, state.effortLevel]);
+  }, [income, state.householdSize, state.housingType, state.housingCost, state.region, state.dependents, state.mainGoal, state.effortLevel, state.lifestyleProfile]);
 
   const mergedTxs = useMemo(() => mergeImportedFiles(state.importedFiles), [state.importedFiles]);
 
@@ -948,6 +992,23 @@ export default function OnboardingScreen() {
       }
       const mergedForSave = mergeImportedFiles(state.importedFiles, accountIds);
       if (mergedForSave.length > 0) addTransactions(mergedForSave);
+
+      // Create emergency fund goal if selected
+      if (state.mainGoal === 'emergenza' && income > 0) {
+        const targetAmount = income * state.emergencyFundMonths;
+        const accountsTotal = state.accounts.reduce((s, a) => s + a.balance, 0);
+        const targetDate = new Date();
+        targetDate.setFullYear(targetDate.getFullYear() + 2);
+        addGoal({
+          title: 'Fondo di Emergenza',
+          emoji: '🛡️',
+          targetAmount,
+          savedAmount: Math.min(accountsTotal, targetAmount),
+          targetDate: targetDate.toISOString().slice(0, 10),
+          color: '#FFB347',
+        });
+      }
+
       await saveOnboardingData({
         completed: true,
         completedAt: new Date().toISOString(),
@@ -973,6 +1034,7 @@ export default function OnboardingScreen() {
           sector: state.workSector ?? undefined,
           stability: state.incomeStability ?? 'stable',
         } : undefined,
+        lifestyleProfile: state.lifestyleProfile,
       });
       router.replace('/(tabs)');
     } catch {
@@ -1076,8 +1138,84 @@ export default function OnboardingScreen() {
           </>
         );
 
-      // ── Step 2: Dove vivi ─────────────────────────────────────────────────
+      // ── Step 2: Stile di vita ─────────────────────────────────────────────
       case 2:
+        return (
+          <>
+            <Text style={s.stepTitle}>Stile di vita</Text>
+            <Text style={s.stepSubtitle}>Personalizziamo i budget in base alle tue abitudini</Text>
+
+            <Text style={s.fieldLabel}>Attività sportiva</Text>
+            <View style={s.housingGrid}>
+              {SPORT_OPTIONS.map(o => (
+                <TouchableOpacity
+                  key={o.id}
+                  style={[s.housingCard, state.lifestyleProfile.sportFrequency === o.id && s.housingCardActive]}
+                  onPress={() => set({ lifestyleProfile: { ...state.lifestyleProfile, sportFrequency: o.id } })}
+                  activeOpacity={0.7}
+                >
+                  <Text style={s.housingEmoji}>{o.emoji}</Text>
+                  <Text style={[s.housingLabel, state.lifestyleProfile.sportFrequency === o.id && s.housingLabelActive]}>{o.label}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            <Text style={[s.fieldLabel, { marginTop: 20 }]}>Viaggi all'anno</Text>
+            <View style={s.housingGrid}>
+              {TRAVEL_OPTIONS.map(o => (
+                <TouchableOpacity
+                  key={o.id}
+                  style={[s.housingCard, state.lifestyleProfile.travelFrequency === o.id && s.housingCardActive]}
+                  onPress={() => set({ lifestyleProfile: { ...state.lifestyleProfile, travelFrequency: o.id } })}
+                  activeOpacity={0.7}
+                >
+                  <Text style={s.housingEmoji}>{o.emoji}</Text>
+                  <Text style={[s.housingLabel, state.lifestyleProfile.travelFrequency === o.id && s.housingLabelActive]}>{o.label}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            <Text style={[s.fieldLabel, { marginTop: 20 }]}>Mangi fuori casa</Text>
+            <View style={s.housingGrid}>
+              {DINING_OPTIONS.map(o => (
+                <TouchableOpacity
+                  key={o.id}
+                  style={[s.housingCard, state.lifestyleProfile.diningOutFrequency === o.id && s.housingCardActive]}
+                  onPress={() => set({ lifestyleProfile: { ...state.lifestyleProfile, diningOutFrequency: o.id } })}
+                  activeOpacity={0.7}
+                >
+                  <Text style={s.housingEmoji}>{o.emoji}</Text>
+                  <Text style={[s.housingLabel, state.lifestyleProfile.diningOutFrequency === o.id && s.housingLabelActive]}>{o.label}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            <Text style={[s.fieldLabel, { marginTop: 20 }]}>Hobby (più risposte)</Text>
+            <View style={ui.chipRow}>
+              {HOBBY_OPTIONS.map(o => {
+                const selected = state.lifestyleProfile.hobbies.includes(o.id);
+                return (
+                  <TouchableOpacity
+                    key={o.id}
+                    style={[ui.chip, selected && ui.chipActive]}
+                    onPress={() => {
+                      const hobbies = selected
+                        ? state.lifestyleProfile.hobbies.filter(h => h !== o.id)
+                        : [...state.lifestyleProfile.hobbies, o.id];
+                      set({ lifestyleProfile: { ...state.lifestyleProfile, hobbies } });
+                    }}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={[ui.chipText, selected && ui.chipTextActive]}>{o.emoji} {o.label}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          </>
+        );
+
+      // ── Step 3: Dove vivi ─────────────────────────────────────────────────
+      case 3:
         return (
           <>
             <Text style={s.stepTitle}>Dove vivi</Text>
@@ -1153,8 +1291,8 @@ export default function OnboardingScreen() {
           </>
         );
 
-      // ── Step 3: Lavoro ────────────────────────────────────────────────────
-      case 3:
+      // ── Step 4: Lavoro ────────────────────────────────────────────────────
+      case 4:
         return (
           <>
             <Text style={s.stepTitle}>Lavoro & Stabilità</Text>
@@ -1207,8 +1345,8 @@ export default function OnboardingScreen() {
           </>
         );
 
-      // ── Step 4: Entrate ───────────────────────────────────────────────────
-      case 4:
+      // ── Step 5: Entrate ───────────────────────────────────────────────────
+      case 5:
         return (
           <>
             <Text style={s.stepTitle}>Le tue entrate</Text>
@@ -1248,8 +1386,8 @@ export default function OnboardingScreen() {
           </>
         );
 
-      // ── Step 5: Conti bancari ─────────────────────────────────────────────
-      case 5:
+      // ── Step 6: Conti bancari ─────────────────────────────────────────────
+      case 6:
         return (
           <>
             <Text style={s.stepTitle}>I tuoi conti bancari</Text>
@@ -1295,8 +1433,8 @@ export default function OnboardingScreen() {
           </>
         );
 
-      // ── Step 6: Crypto ────────────────────────────────────────────────────
-      case 6:
+      // ── Step 7: Crypto ────────────────────────────────────────────────────
+      case 7:
         return (
           <>
             <Text style={s.stepTitle}>Criptovalute</Text>
@@ -1343,8 +1481,8 @@ export default function OnboardingScreen() {
           </>
         );
 
-      // ── Step 7: Investimenti ──────────────────────────────────────────────
-      case 7:
+      // ── Step 8: Investimenti ──────────────────────────────────────────────
+      case 8:
         return (
           <>
             <Text style={s.stepTitle}>Investimenti</Text>
@@ -1391,8 +1529,8 @@ export default function OnboardingScreen() {
           </>
         );
 
-      // ── Step 8: Obiettivi & Impegno ───────────────────────────────────────
-      case 8:
+      // ── Step 9: Obiettivi & Impegno ───────────────────────────────────────
+      case 9:
         return (
           <>
             <Text style={s.stepTitle}>Obiettivi & Impegno</Text>
@@ -1444,11 +1582,46 @@ export default function OnboardingScreen() {
                 </Text>
               </View>
             )}
+
+            {state.mainGoal === 'emergenza' && income > 0 && (
+              <View style={s.emergencyCard}>
+                <View style={s.emergencyHeader}>
+                  <Text style={s.emergencyEmoji}>🛡️</Text>
+                  <View style={{ flex: 1 }}>
+                    <Text style={s.emergencyTitle}>Fondo di Emergenza</Text>
+                    <Text style={s.emergencySub}>Quanti mesi di spese vuoi coprire?</Text>
+                  </View>
+                </View>
+                <View style={s.emergencyToggle}>
+                  {([3, 6] as const).map((m) => (
+                    <TouchableOpacity
+                      key={m}
+                      style={[s.emergencyPill, state.emergencyFundMonths === m && s.emergencyPillActive]}
+                      activeOpacity={0.7}
+                      onPress={() => set({ emergencyFundMonths: m })}
+                    >
+                      <Text style={[s.emergencyPillText, state.emergencyFundMonths === m && s.emergencyPillTextActive]}>
+                        {m} mesi {m === 3 ? '(starter)' : '(completo)'}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+                <View style={s.emergencyTarget}>
+                  <Text style={s.emergencyTargetLabel}>Obiettivo</Text>
+                  <Text style={s.emergencyTargetAmount}>{fmtEur(income * state.emergencyFundMonths)}</Text>
+                  {state.accounts.length > 0 && (
+                    <Text style={s.emergencyTargetSub}>
+                      Saldo attuale: {fmtEur(state.accounts.reduce((sum, a) => sum + a.balance, 0))} · punto di partenza
+                    </Text>
+                  )}
+                </View>
+              </View>
+            )}
           </>
         );
 
-      // ── Step 9: Importa estratti conto (multi-file) ───────────────────────
-      case 9: {
+      // ── Step 10: Importa estratti conto (multi-file) ─────────────────────
+      case 10: {
         const totalRaw = state.importedFiles.reduce((s, f) => s + f.transactions.length, 0);
         const dedupRemoved = totalRaw - mergedTxs.length;
         return (
@@ -1540,8 +1713,8 @@ export default function OnboardingScreen() {
         );
       }
 
-      // ── Step 10: Analisi & Budget ─────────────────────────────────────────
-      case 10:
+      // ── Step 11: Analisi & Budget ─────────────────────────────────────────
+      case 11:
         return (
           <>
             <Text style={s.stepTitle}>La tua analisi</Text>
@@ -1712,8 +1885,8 @@ export default function OnboardingScreen() {
           </>
         );
 
-      // ── Step 11: Tutto pronto ────────────────────────────────────────────
-      case 11:
+      // ── Step 12: Tutto pronto ────────────────────────────────────────────
+      case 12:
         return (
           <View style={s.doneContent}>
             <View style={s.doneIcon}>
@@ -1771,7 +1944,7 @@ export default function OnboardingScreen() {
   if (state.step === 0) return renderStep() as React.ReactElement;
 
   // ── Done step: centered ───────────────────────────────────────────────────
-  if (state.step === 11) {
+  if (state.step === 12) {
     return (
       <SafeAreaView style={s.safe} edges={['top', 'bottom']}>
         <ScrollView contentContainerStyle={s.contentDone} showsVerticalScrollIndicator={false}>
@@ -1813,11 +1986,11 @@ export default function OnboardingScreen() {
         {/* Bottom actions */}
         <View style={s.bottomActions}>
           <PrimaryBtn
-            label={state.step === 10 ? 'Conferma →' : 'Avanti →'}
+            label={state.step === 11 ? 'Conferma →' : 'Avanti →'}
             onPress={nextStep}
             disabled={!valid}
           />
-          {(state.step === 5 || state.step === 6 || state.step === 7 || state.step === 9) && (
+          {(state.step === 6 || state.step === 7 || state.step === 8 || state.step === 10) && (
             <GhostBtn label="Salta questo passo" onPress={nextStep} />
           )}
         </View>
@@ -2105,6 +2278,40 @@ const s = StyleSheet.create({
   effortDesc: { ...Typography.caption, color: Colors.text.muted },
   savingPreview: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: Colors.semantic.success + '15', borderRadius: Radius.md, padding: 12 },
   savingPreviewText: { ...Typography.body, color: Colors.text.secondary, flex: 1 },
+
+  // Emergency fund
+  emergencyCard: {
+    backgroundColor: Colors.bg.card,
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+    borderColor: '#FFB347' + '40',
+    padding: 16,
+    gap: 14,
+  },
+  emergencyHeader: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  emergencyEmoji: { fontSize: 28 },
+  emergencyTitle: { ...Typography.h3, color: Colors.text.primary },
+  emergencySub: { ...Typography.caption, color: Colors.text.secondary },
+  emergencyToggle: { flexDirection: 'row', gap: 10 },
+  emergencyPill: {
+    flex: 1,
+    paddingVertical: 10,
+    borderRadius: Radius.full,
+    backgroundColor: Colors.bg.elevated,
+    borderWidth: 1,
+    borderColor: Colors.border.default,
+    alignItems: 'center',
+  },
+  emergencyPillActive: {
+    backgroundColor: '#FFB347' + '25',
+    borderColor: '#FFB347',
+  },
+  emergencyPillText: { ...Typography.caption, color: Colors.text.secondary, fontWeight: '600' },
+  emergencyPillTextActive: { color: '#FFB347' },
+  emergencyTarget: { alignItems: 'center', gap: 4 },
+  emergencyTargetLabel: { ...Typography.caption, color: Colors.text.secondary },
+  emergencyTargetAmount: { fontSize: 28, fontWeight: '800', color: '#FFB347', letterSpacing: -1 },
+  emergencyTargetSub: { ...Typography.micro, color: Colors.text.muted, textAlign: 'center' },
 
   // Import
   importButtons: { flexDirection: 'row', gap: 14 },

@@ -1,6 +1,15 @@
 import type { SpendingAnalysis, CategoryAnalysis } from './spendingAnalyzer';
 import type { InsightProfile } from './insightProfile';
 
+export interface PersistentInsight {
+  id: string;
+  icon: string;
+  iconColor: string;
+  title: string;
+  body: string;
+  trend: 'positive' | 'negative' | 'neutral';
+}
+
 export interface CoachRecommendation {
   type: 'positive' | 'action' | 'info';
   title: string;
@@ -23,6 +32,86 @@ export interface CoachQuestion {
   icon: string;
   iconColor: string;
   options: QuestionOption[];
+}
+
+// ── Persistent insights ───────────────────────────────────────────────────────
+
+export function generatePersistentInsights(analysis: SpendingAnalysis): PersistentInsight[] {
+  const { monthIncome, totalExpenses, savingsRate, categories } = analysis;
+  if (monthIncome === 0 && totalExpenses === 0) return [];
+
+  const today = new Date();
+  const daysElapsed = Math.max(1, today.getDate());
+  const daysInMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
+
+  const insights: PersistentInsight[] = [];
+
+  // 1. Risparmio
+  const savedAmount = monthIncome - totalExpenses;
+  const savingsColor = savingsRate >= 20 ? '#00D68F' : savingsRate >= 10 ? '#FFB347' : '#FF6B6B';
+  const savingsTrend: PersistentInsight['trend'] = savingsRate >= 20 ? 'positive' : savingsRate >= 10 ? 'neutral' : 'negative';
+  insights.push({
+    id: 'savings_rate',
+    icon: 'trending-up',
+    iconColor: savingsColor,
+    title: `Risparmio ${savingsRate.toFixed(0)}%`,
+    body: monthIncome > 0
+      ? `Stai risparmiando €${savedAmount.toFixed(0)} su €${monthIncome.toFixed(0)} di reddito. ${savingsRate >= 20 ? '≥20% ottimo!' : savingsRate >= 10 ? '≥10% ok, punta al 20%.' : '<10% critico: riduci le uscite.'}`
+      : `Uscite totali: €${totalExpenses.toFixed(0)}. Aggiungi il reddito per calcolare il tasso di risparmio.`,
+    trend: savingsTrend,
+  });
+
+  // 2. Media giornaliera
+  if (totalExpenses > 0) {
+    const dailyActual = totalExpenses / daysElapsed;
+    const dailyBudget = monthIncome > 0 ? monthIncome / daysInMonth : 0;
+    const dailyColor = dailyBudget > 0 && dailyActual > dailyBudget ? '#FF6B6B' : '#00D68F';
+    insights.push({
+      id: 'daily_avg',
+      icon: 'calendar',
+      iconColor: dailyColor,
+      title: `€${dailyActual.toFixed(0)}/giorno`,
+      body: dailyBudget > 0
+        ? `Media giornaliera: €${dailyActual.toFixed(0)} (budget: €${dailyBudget.toFixed(0)}/giorno). ${dailyActual > dailyBudget ? 'Stai spendendo più del previsto.' : 'Dentro i limiti!'}`
+        : `Stai spendendo in media €${dailyActual.toFixed(0)} al giorno in ${daysElapsed} giorni.`,
+      trend: dailyBudget > 0 ? (dailyActual <= dailyBudget ? 'positive' : 'negative') : 'neutral',
+    });
+  }
+
+  // 3. Categoria più efficiente (budgetProgress < 1, budgetLimit > 0)
+  const efficientCat = categories
+    .filter((c) => c.budgetLimit > 0 && c.budgetProgress < 1 && c.monthTotal > 0)
+    .sort((a, b) => a.budgetProgress - b.budgetProgress)[0];
+  if (efficientCat) {
+    const remaining = efficientCat.budgetLimit - efficientCat.monthTotal;
+    insights.push({
+      id: `efficient_${efficientCat.category}`,
+      icon: efficientCat.icon,
+      iconColor: '#00D68F',
+      title: `${efficientCat.label} sotto controllo`,
+      body: `Hai usato solo il ${Math.round(efficientCat.budgetProgress * 100)}% del budget (€${efficientCat.monthTotal.toFixed(0)} su €${efficientCat.budgetLimit}). Avanzano €${remaining.toFixed(0)}.`,
+      trend: 'positive',
+    });
+  }
+
+  // 4. Proiezione fine mese
+  if (totalExpenses > 0 && daysElapsed > 0) {
+    const projected = (totalExpenses / daysElapsed) * daysInMonth;
+    const projColor = monthIncome > 0 ? (projected < monthIncome ? '#00D68F' : '#FF6B6B') : '#FFB347';
+    const projTrend: PersistentInsight['trend'] = monthIncome > 0 ? (projected < monthIncome ? 'positive' : 'negative') : 'neutral';
+    insights.push({
+      id: 'projection',
+      icon: 'analytics',
+      iconColor: projColor,
+      title: `Proiezione: €${projected.toFixed(0)}`,
+      body: monthIncome > 0
+        ? `Al ritmo attuale spenderai circa €${projected.toFixed(0)} entro fine mese${projected < monthIncome ? `, restando €${(monthIncome - projected).toFixed(0)} di risparmio.` : `. Supereresti il reddito di €${(projected - monthIncome).toFixed(0)}.`}`
+        : `Al ritmo attuale le uscite totali di questo mese saranno circa €${projected.toFixed(0)}.`,
+      trend: projTrend,
+    });
+  }
+
+  return insights;
 }
 
 // ── Question generators ───────────────────────────────────────────────────────
@@ -326,6 +415,177 @@ function lowSavingsQuestion(
   };
 }
 
+function groceriesQuestion(ca: CategoryAnalysis): CoachQuestion | null {
+  if (ca.category !== 'groceries' || ca.monthTotal < 400) return null;
+
+  return {
+    id: `q_groceries_${Math.floor(ca.monthTotal)}`,
+    category: 'groceries',
+    priority: ca.status === 'over' ? 70 : 50,
+    title: `Supermercato: €${ca.monthTotal.toFixed(0)} questo mese`,
+    body: `La spesa alimentare è stata di €${ca.monthTotal.toFixed(0)}. Come mai è così alta?`,
+    icon: 'cart',
+    iconColor: '#4FC3F7',
+    options: [
+      {
+        label: 'Famiglia numerosa',
+        tag: 'groceries_family',
+        recommendation: {
+          type: 'info',
+          title: 'Normale per un nucleo grande',
+          body: `Con più persone in casa, la spesa cresce. Considera acquisti in blocco, prodotti a marchio del supermercato e la spesa online per risparmiare il 10–15%.`,
+        },
+      },
+      {
+        label: 'Prodotti di qualità',
+        tag: 'groceries_quality',
+        recommendation: {
+          type: 'positive',
+          title: 'Scelta consapevole',
+          body: `Investire in cibo di qualità è sano. Se rientra nel budget, è una priorità legittima. Considera di bilanciare con qualche prodotto generico per le categorie meno critiche.`,
+        },
+      },
+      {
+        label: 'Sprechi da ridurre',
+        tag: 'groceries_waste',
+        recommendation: {
+          type: 'action',
+          title: 'Pianifica la spesa',
+          body: `Fai una lista prima di andare al supermercato e segui il metodo FIFO (usa prima ciò che è più vecchio). Potresti ridurre lo spreco alimentare del 20–30% e risparmiare €${Math.round(ca.monthTotal * 0.20)}/mese.`,
+          potentialSaving: Math.round(ca.monthTotal * 0.20),
+        },
+      },
+    ],
+  };
+}
+
+function rentQuestion(ca: CategoryAnalysis, monthIncome: number): CoachQuestion | null {
+  if (ca.category !== 'rent' || ca.monthTotal === 0) return null;
+  if (monthIncome <= 0) return null;
+  const rentPct = Math.round((ca.monthTotal / monthIncome) * 100);
+  if (rentPct < 35) return null;
+
+  return {
+    id: `q_rent_${Math.floor(ca.monthTotal)}`,
+    category: 'rent',
+    priority: 80,
+    title: `Affitto al ${rentPct}% del reddito`,
+    body: `L'affitto/mutuo pesa il ${rentPct}% del tuo reddito mensile (€${ca.monthTotal.toFixed(0)} su €${monthIncome.toFixed(0)}). È sostenibile?`,
+    icon: 'home',
+    iconColor: '#FF9500',
+    options: [
+      {
+        label: 'Sì, è gestibile',
+        tag: 'rent_ok',
+        recommendation: {
+          type: 'info',
+          title: 'Monitora le spese variabili',
+          body: `Con un'alta incidenza dell'affitto, è importante tenere sotto controllo le spese discrezionali (shopping, ristoranti) per mantenere un buon tasso di risparmio.`,
+        },
+      },
+      {
+        label: 'Sto cercando di ridurre',
+        tag: 'rent_reducing',
+        recommendation: {
+          type: 'action',
+          title: 'Valuta le alternative',
+          body: `Considera: un coinquilino per dividere l'affitto, una zona leggermente più periferica, o rinegoziare il contratto. Anche €100/mese in meno fanno €1.200/anno.`,
+          potentialSaving: Math.round(ca.monthTotal * 0.10),
+        },
+      },
+      {
+        label: 'È temporaneo',
+        tag: 'rent_temporary',
+        recommendation: {
+          type: 'positive',
+          title: 'Situazione transitoria, ok',
+          body: `Se è temporaneo, mantieni alta la consapevolezza sulle altre spese. Appena la situazione cambia, cerca di portare l'affitto sotto il 30% del reddito.`,
+        },
+      },
+    ],
+  };
+}
+
+function sportsHealthyQuestion(ca: CategoryAnalysis): CoachQuestion | null {
+  if (ca.category !== 'sports' || ca.monthTotal < 80) return null;
+  if (ca.status === 'over') return null; // already handled by other questions
+
+  return {
+    id: `q_sports_${Math.floor(ca.monthTotal)}`,
+    category: 'sports',
+    priority: 40,
+    title: `Sport: €${ca.monthTotal.toFixed(0)} questo mese`,
+    body: `Hai speso €${ca.monthTotal.toFixed(0)} in attività sportive, rimanendo dentro il budget. Ottima abitudine! Come ottimizzi i costi?`,
+    icon: 'fitness',
+    iconColor: '#00D68F',
+    options: [
+      {
+        label: 'Ho un abbonamento fisso',
+        tag: 'sports_subscription',
+        recommendation: {
+          type: 'positive',
+          title: 'Abbonamento = risparmio',
+          body: `Un abbonamento mensile di solito costa meno di 4–5 ingressi singoli. Se vai almeno 3 volte a settimana, stai ottimizzando bene.`,
+        },
+      },
+      {
+        label: 'Vado quando posso',
+        tag: 'sports_occasional',
+        recommendation: {
+          type: 'info',
+          title: 'Valuta il piano più adatto',
+          body: `Se vai meno di 8 volte al mese, considera un piano entry-level o palestre low-cost come McFit. Potresti risparmiare €${Math.round(ca.monthTotal * 0.3)}/mese.`,
+          potentialSaving: Math.round(ca.monthTotal * 0.3),
+        },
+      },
+    ],
+  };
+}
+
+function utilitiesQuestion(ca: CategoryAnalysis): CoachQuestion | null {
+  if (ca.category !== 'utilities' || ca.monthTotal < 200) return null;
+
+  return {
+    id: `q_utilities_${Math.floor(ca.monthTotal)}`,
+    category: 'utilities',
+    priority: ca.status === 'over' ? 72 : 52,
+    title: `Bollette alte: €${ca.monthTotal.toFixed(0)}/mese`,
+    body: `Le utenze (luce, gas, acqua, internet) ti costano €${ca.monthTotal.toFixed(0)} questo mese. Hai valutato offerte alternative?`,
+    icon: 'flash',
+    iconColor: '#FFB347',
+    options: [
+      {
+        label: 'Ho già ottimizzato',
+        tag: 'utilities_optimized',
+        recommendation: {
+          type: 'positive',
+          title: 'Ben fatto!',
+          body: `Se hai già confrontato i fornitori, sei sulla buona strada. Rinnova il confronto ogni 12 mesi perché i prezzi cambiano.`,
+        },
+      },
+      {
+        label: 'Non ho mai confrontato',
+        tag: 'utilities_never_compared',
+        recommendation: {
+          type: 'action',
+          title: 'Confronta i fornitori',
+          body: `Usa portali come Segugio.it o il Portale Offerte ARERA per confrontare luce e gas. Cambiare fornitore può far risparmiare €${Math.round(ca.monthTotal * 0.15)}–€${Math.round(ca.monthTotal * 0.25)}/mese senza cambiare nulla in casa.`,
+          potentialSaving: Math.round(ca.monthTotal * 0.20),
+        },
+      },
+      {
+        label: 'È un momento alto',
+        tag: 'utilities_peak',
+        recommendation: {
+          type: 'info',
+          title: 'Stagionalità normale',
+          body: `Luce e gas variano con le stagioni. Usa la media annuale come riferimento e considera tariffe biorarie per ridurre il costo nei mesi più caldi.`,
+        },
+      },
+    ],
+  };
+}
+
 // ── Main export ───────────────────────────────────────────────────────────────
 
 export function generateCoachQuestions(
@@ -351,6 +611,10 @@ export function generateCoachQuestions(
       shoppingOverBudgetQuestion,
       weekendSpendingQuestion,
       trendIncreaseQuestion,
+      (ca: CategoryAnalysis) => groceriesQuestion(ca),
+      (ca: CategoryAnalysis) => rentQuestion(ca, analysis.monthIncome),
+      (ca: CategoryAnalysis) => sportsHealthyQuestion(ca),
+      (ca: CategoryAnalysis) => utilitiesQuestion(ca),
     ];
 
     for (const gen of generators) {
