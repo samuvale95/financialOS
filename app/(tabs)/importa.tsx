@@ -70,24 +70,37 @@ export default function ImportaScreen() {
     setPhase('picking');
     try {
       const picked = await DocumentPicker.getDocumentAsync({
-        type: [
-          'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-          'application/vnd.ms-excel',
-        ],
+        // '*/*' è necessario su iOS: file da Google Drive, iCloud e altre app
+        // arrivano spesso come application/octet-stream e verrebbero filtrati via
+        // con MIME type specifici. Rileviamo il formato dall'estensione dopo il pick.
+        type: ['*/*'],
         copyToCacheDirectory: true,
       });
       if (picked.canceled || !picked.assets?.[0]) { setPhase('idle'); return; }
+      const asset = picked.assets[0];
+      const name = (asset.name ?? '').toLowerCase();
       setPhase('parsing');
-      const result = await parseExcel(picked.assets[0].uri);
+
+      let result;
+      if (name.endsWith('.csv') || name.endsWith('.txt')) {
+        const content = await FileSystem.readAsStringAsync(asset.uri, {
+          encoding: FileSystem.EncodingType.UTF8,
+        });
+        result = parseCSV(content);
+      } else {
+        // .xlsx, .xls, .ods, .numbers o binario generico da Google Sheets
+        result = await parseExcel(asset.uri);
+      }
+
       if (result.transactions.length === 0) {
-        setErrorMsg('Nessuna transazione valida trovata nel file Excel.');
+        setErrorMsg('Nessuna transazione valida trovata nel file. Verifica che contenga colonne di data, importo e descrizione.');
         setPhase('error');
         return;
       }
       setPreview({ result });
       setPhase('preview');
     } catch (e) {
-      setErrorMsg('Errore durante la lettura del file Excel.');
+      setErrorMsg('Errore durante la lettura del file. Assicurati che il file sia un foglio di calcolo valido (.xlsx, .csv).');
       setPhase('error');
     }
   };
@@ -112,6 +125,11 @@ export default function ImportaScreen() {
     const added = addTransactions(preview.result.transactions as Omit<Transaction, 'id'>[]);
     setPreview((prev) => prev ? { ...prev, importedCount: added } : null);
     setPhase('done');
+  };
+
+  const handleGoHome = () => {
+    handleReset();
+    router.replace('/(tabs)');
   };
 
   const handleReset = () => {
@@ -311,8 +329,14 @@ export default function ImportaScreen() {
           )}
 
           <Button
+            label="Vai alla Home"
+            onPress={handleGoHome}
+            fullWidth
+          />
+          <Button
             label="Vedi Transazioni"
             onPress={() => { handleReset(); router.push('/(tabs)/spese'); }}
+            variant="ghost"
             fullWidth
           />
           <Button label="Importa altro" onPress={handleReset} variant="ghost" fullWidth />

@@ -1,17 +1,25 @@
 export type CategoryId =
+  | 'groceries'
+  | 'restaurants'
   | 'food'
+  | 'fuel'
+  | 'public_transport'
   | 'transport'
   | 'shopping'
   | 'entertainment'
+  | 'sports'
   | 'health'
+  | 'pharmacy'
   | 'home'
+  | 'rent'
+  | 'utilities'
+  | 'insurance'
+  | 'subscriptions'
   | 'travel'
   | 'education'
   | 'salary'
   | 'freelance'
   | 'investment'
-  | 'subscriptions'
-  | 'utilities'
   | 'other';
 
 export interface Category {
@@ -24,20 +32,52 @@ export interface Category {
 }
 
 export const CATEGORIES: Record<CategoryId, Category> = {
+  groceries: {
+    id: 'groceries',
+    label: 'Supermercato',
+    icon: 'cart',
+    color: '#34C759',
+    bgColor: 'rgba(52,199,89,0.15)',
+    type: 'expense',
+  },
+  restaurants: {
+    id: 'restaurants',
+    label: 'Ristoranti & Bar',
+    icon: 'restaurant',
+    color: '#FF9500',
+    bgColor: 'rgba(255,149,0,0.15)',
+    type: 'expense',
+  },
   food: {
     id: 'food',
     label: 'Alimentari',
     icon: 'fast-food',
-    color: '#FF9500',
-    bgColor: 'rgba(255,149,0,0.15)',
+    color: '#FF6B35',
+    bgColor: 'rgba(255,107,53,0.15)',
+    type: 'expense',
+  },
+  fuel: {
+    id: 'fuel',
+    label: 'Carburante',
+    icon: 'flame',
+    color: '#636366',
+    bgColor: 'rgba(99,99,102,0.15)',
+    type: 'expense',
+  },
+  public_transport: {
+    id: 'public_transport',
+    label: 'Trasporti Pubblici',
+    icon: 'bus',
+    color: '#4FC3F7',
+    bgColor: 'rgba(79,195,247,0.15)',
     type: 'expense',
   },
   transport: {
     id: 'transport',
     label: 'Trasporti',
     icon: 'car',
-    color: '#4FC3F7',
-    bgColor: 'rgba(79,195,247,0.15)',
+    color: '#5E9BF0',
+    bgColor: 'rgba(94,155,240,0.15)',
     type: 'expense',
   },
   shopping: {
@@ -56,12 +96,36 @@ export const CATEGORIES: Record<CategoryId, Category> = {
     bgColor: 'rgba(191,90,242,0.15)',
     type: 'expense',
   },
+  sports: {
+    id: 'sports',
+    label: 'Sport & Fitness',
+    icon: 'barbell',
+    color: '#FF3B30',
+    bgColor: 'rgba(255,59,48,0.15)',
+    type: 'expense',
+  },
   health: {
     id: 'health',
     label: 'Salute',
-    icon: 'medkit',
+    icon: 'heart',
     color: '#30D158',
     bgColor: 'rgba(48,209,88,0.15)',
+    type: 'expense',
+  },
+  pharmacy: {
+    id: 'pharmacy',
+    label: 'Farmacia',
+    icon: 'medkit',
+    color: '#00C7BE',
+    bgColor: 'rgba(0,199,190,0.15)',
+    type: 'expense',
+  },
+  rent: {
+    id: 'rent',
+    label: 'Affitto & Mutuo',
+    icon: 'key',
+    color: '#5856D6',
+    bgColor: 'rgba(88,86,214,0.15)',
     type: 'expense',
   },
   home: {
@@ -70,6 +134,30 @@ export const CATEGORIES: Record<CategoryId, Category> = {
     icon: 'home',
     color: '#FF9F0A',
     bgColor: 'rgba(255,159,10,0.15)',
+    type: 'expense',
+  },
+  utilities: {
+    id: 'utilities',
+    label: 'Bollette',
+    icon: 'flash',
+    color: '#FFB347',
+    bgColor: 'rgba(255,179,71,0.15)',
+    type: 'expense',
+  },
+  insurance: {
+    id: 'insurance',
+    label: 'Assicurazioni',
+    icon: 'shield-checkmark',
+    color: '#32ADE6',
+    bgColor: 'rgba(50,173,230,0.15)',
+    type: 'expense',
+  },
+  subscriptions: {
+    id: 'subscriptions',
+    label: 'Abbonamenti',
+    icon: 'repeat',
+    color: '#FF6B6B',
+    bgColor: 'rgba(255,107,107,0.15)',
     type: 'expense',
   },
   travel: {
@@ -111,22 +199,6 @@ export const CATEGORIES: Record<CategoryId, Category> = {
     color: '#6C63FF',
     bgColor: 'rgba(108,99,255,0.15)',
     type: 'both',
-  },
-  subscriptions: {
-    id: 'subscriptions',
-    label: 'Abbonamenti',
-    icon: 'repeat',
-    color: '#FF6B6B',
-    bgColor: 'rgba(255,107,107,0.15)',
-    type: 'expense',
-  },
-  utilities: {
-    id: 'utilities',
-    label: 'Bollette',
-    icon: 'flash',
-    color: '#FFB347',
-    bgColor: 'rgba(255,179,71,0.15)',
-    type: 'expense',
   },
   other: {
     id: 'other',

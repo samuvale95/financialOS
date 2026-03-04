@@ -26,11 +26,8 @@ function ScoreRing({ score }: { score: number }) {
     'Attenzione';
   return (
     <View style={s.ringContainer}>
-      {/* Outer glow ring */}
       <View style={[s.ringOuter, { borderColor: color + '28' }]}>
-        {/* Inner solid ring */}
         <View style={[s.ringInner, { borderColor: color }]}>
-          {/* Score row: number + /100 aligned at bottom */}
           <View style={s.ringScoreRow}>
             <Text style={[s.ringScore, { color }]}>{score}</Text>
             <Text style={s.ringMax}>/100</Text>
@@ -44,7 +41,7 @@ function ScoreRing({ score }: { score: number }) {
 
 // ── Category analysis card ────────────────────────────────────────────────────
 
-function CategoryCard({ ca }: { ca: CategoryAnalysis }) {
+function CategoryCard({ ca, totalExpenses }: { ca: CategoryAnalysis; totalExpenses: number }) {
   const [expanded, setExpanded] = useState(false);
 
   const statusColor =
@@ -62,6 +59,16 @@ function CategoryCard({ ca }: { ca: CategoryAnalysis }) {
   const trendIcon = ca.vsLastMonth > 5 ? 'trending-up' : ca.vsLastMonth < -5 ? 'trending-down' : 'remove';
   const trendColor = ca.vsLastMonth > 5 ? Colors.semantic.danger : ca.vsLastMonth < -5 ? Colors.semantic.success : Colors.text.muted;
 
+  const pctOfTotal = totalExpenses > 0 ? (ca.monthTotal / totalExpenses * 100).toFixed(0) : '0';
+  const avgPerTx = ca.txCount > 0 ? (ca.monthTotal / ca.txCount).toFixed(0) : '0';
+
+  // Top 5 largest transactions for the expanded detail
+  const topTx = useMemo(() => {
+    return [...ca.monthTx]
+      .sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount))
+      .slice(0, 5);
+  }, [ca.monthTx]);
+
   return (
     <TouchableOpacity
       style={[s.catCard, ca.status === 'over' && s.catCardOver]}
@@ -75,10 +82,13 @@ function CategoryCard({ ca }: { ca: CategoryAnalysis }) {
         </View>
         <View style={s.catInfo}>
           <Text style={s.catLabel}>{ca.label}</Text>
-          <Text style={s.catAmount}>
-            €{ca.monthTotal.toFixed(0)}
-            {ca.budgetLimit > 0 && <Text style={s.catBudget}> / €{ca.budgetLimit}</Text>}
-          </Text>
+          <View style={s.catAmountRow}>
+            <Text style={s.catAmount}>€{ca.monthTotal.toFixed(0)}</Text>
+            {ca.budgetLimit > 0 && (
+              <Text style={s.catBudget}> / €{ca.budgetLimit}</Text>
+            )}
+            <Text style={s.catPct}> · {pctOfTotal}% uscite</Text>
+          </View>
         </View>
         <View style={s.catRight}>
           <View style={[s.statusBadge, { backgroundColor: statusColor + '20' }]}>
@@ -110,13 +120,14 @@ function CategoryCard({ ca }: { ca: CategoryAnalysis }) {
         </View>
       )}
 
-      {/* Top merchants — always visible if any */}
+      {/* Merchant chips — always visible */}
       {ca.topMerchants.length > 0 && (
         <View style={s.merchantRow}>
           {ca.topMerchants.slice(0, expanded ? 5 : 3).map((m) => (
-            <View key={m.name} style={s.merchantChip}>
+            <View key={m.name} style={[s.merchantChip, { borderLeftColor: ca.color }]}>
               <Text style={s.merchantName} numberOfLines={1}>{m.name}</Text>
-              <Text style={s.merchantCount}>{m.count}x</Text>
+              <Text style={s.merchantAmount}>€{m.total.toFixed(0)}</Text>
+              <Text style={s.merchantCount}>{m.count}×</Text>
             </View>
           ))}
         </View>
@@ -125,25 +136,104 @@ function CategoryCard({ ca }: { ca: CategoryAnalysis }) {
       {/* Expanded details */}
       {expanded && (
         <View style={s.expandedSection}>
-          {ca.uniqueDays > 0 && (
-            <Text style={s.expandedDetail}>
-              <Text style={s.expandedDetailBold}>{ca.uniqueDays}</Text> giorni con spese ·{' '}
-              <Text style={s.expandedDetailBold}>{ca.txCount}</Text> transazioni
-            </Text>
-          )}
+
+          {/* Quick stats row */}
+          <View style={s.expandedStats}>
+            <View style={s.expandedStat}>
+              <Text style={s.expandedStatValue}>{ca.txCount}</Text>
+              <Text style={s.expandedStatLabel}>transazioni</Text>
+            </View>
+            <View style={s.expandedStatDiv} />
+            <View style={s.expandedStat}>
+              <Text style={s.expandedStatValue}>€{avgPerTx}</Text>
+              <Text style={s.expandedStatLabel}>media/spesa</Text>
+            </View>
+            <View style={s.expandedStatDiv} />
+            <View style={s.expandedStat}>
+              <Text style={s.expandedStatValue}>{ca.uniqueDays}</Text>
+              <Text style={s.expandedStatLabel}>giorni attivi</Text>
+            </View>
+            {ca.prevMonthTotal > 0 && (
+              <>
+                <View style={s.expandedStatDiv} />
+                <View style={s.expandedStat}>
+                  <Text style={[s.expandedStatValue, { color: trendColor }]}>
+                    {ca.vsLastMonth > 0 ? '+' : ''}{Math.round(ca.vsLastMonth)}%
+                  </Text>
+                  <Text style={s.expandedStatLabel}>vs mese prec.</Text>
+                </View>
+              </>
+            )}
+          </View>
+
+          {/* Weekend vs weekday */}
           {ca.weekendTotal > 0 && ca.weekdayTotal > 0 && (
-            <Text style={s.expandedDetail}>
-              Weekend: <Text style={s.expandedDetailBold}>€{ca.weekendTotal.toFixed(0)}</Text> ·
-              Feriali: <Text style={s.expandedDetailBold}>€{ca.weekdayTotal.toFixed(0)}</Text>
-            </Text>
+            <View style={s.splitRow}>
+              <View style={s.splitItem}>
+                <View style={[s.splitBar, { backgroundColor: ca.color + '30' }]}>
+                  <View
+                    style={[
+                      s.splitBarFill,
+                      {
+                        width: `${(ca.weekendTotal / (ca.weekendTotal + ca.weekdayTotal)) * 100}%` as any,
+                        backgroundColor: ca.color,
+                      },
+                    ]}
+                  />
+                </View>
+                <View style={s.splitLabels}>
+                  <Text style={s.splitLabelText}>Weekend</Text>
+                  <Text style={s.splitLabelValue}>€{ca.weekendTotal.toFixed(0)}</Text>
+                </View>
+              </View>
+              <View style={s.splitItem}>
+                <View style={[s.splitBar, { backgroundColor: Colors.text.muted + '20' }]}>
+                  <View
+                    style={[
+                      s.splitBarFill,
+                      {
+                        width: `${(ca.weekdayTotal / (ca.weekendTotal + ca.weekdayTotal)) * 100}%` as any,
+                        backgroundColor: Colors.text.muted,
+                      },
+                    ]}
+                  />
+                </View>
+                <View style={s.splitLabels}>
+                  <Text style={s.splitLabelText}>Feriali</Text>
+                  <Text style={s.splitLabelValue}>€{ca.weekdayTotal.toFixed(0)}</Text>
+                </View>
+              </View>
+            </View>
           )}
+
+          {/* Top transactions */}
+          {topTx.length > 0 && (
+            <View style={s.txSection}>
+              <Text style={s.txSectionTitle}>SPESE MAGGIORI</Text>
+              {topTx.map((t, i) => (
+                <View key={t.id} style={[s.txRow, i < topTx.length - 1 && s.txRowBorder]}>
+                  <View style={s.txInfo}>
+                    <Text style={s.txDesc} numberOfLines={1}>
+                      {t.merchant || t.description}
+                    </Text>
+                    <Text style={s.txDate}>{t.date}</Text>
+                  </View>
+                  <Text style={s.txAmount}>€{Math.abs(t.amount).toFixed(2)}</Text>
+                </View>
+              ))}
+            </View>
+          )}
+
+          {/* Recurring */}
           {ca.recurringItems.length > 0 && (
-            <View style={s.recurringList}>
-              <Text style={s.recurringTitle}>Ricorrenti rilevati:</Text>
+            <View style={s.recurringSection}>
+              <Text style={s.txSectionTitle}>RICORRENTI RILEVATI</Text>
               {ca.recurringItems.map((r) => (
-                <Text key={r.description} style={s.recurringItem}>
-                  · {r.description} — €{r.amount.toFixed(0)}/mese
-                </Text>
+                <View key={r.description} style={s.recurringRow}>
+                  <Ionicons name="repeat" size={13} color={Colors.accent.primary} />
+                  <Text style={s.recurringDesc} numberOfLines={1}>{r.description}</Text>
+                  <Text style={s.recurringAmt}>~€{r.amount.toFixed(0)}/mese</Text>
+                </View>
               ))}
             </View>
           )}
@@ -203,13 +293,7 @@ function QuestionCard({ question, onAnswer, onDismiss }: QuestionCardProps) {
 
 // ── Recommendation card ───────────────────────────────────────────────────────
 
-function RecommendationCard({
-  rec,
-  onNext,
-}: {
-  rec: CoachRecommendation;
-  onNext: () => void;
-}) {
+function RecommendationCard({ rec, onNext }: { rec: CoachRecommendation; onNext: () => void }) {
   const accentColor =
     rec.type === 'positive' ? Colors.semantic.success :
     rec.type === 'action' ? Colors.accent.primary :
@@ -229,9 +313,7 @@ function RecommendationCard({
       {rec.potentialSaving != null && rec.potentialSaving > 0 && (
         <View style={s.savingBadge}>
           <Ionicons name="leaf" size={13} color={Colors.semantic.success} />
-          <Text style={s.savingText}>
-            Risparmio potenziale: €{rec.potentialSaving}/mese
-          </Text>
+          <Text style={s.savingText}>Risparmio potenziale: €{rec.potentialSaving}/mese</Text>
         </View>
       )}
       <TouchableOpacity style={s.nextBtn} onPress={onNext} activeOpacity={0.7}>
@@ -256,7 +338,6 @@ export default function CoachScreen() {
     [analysis, insightProfile],
   );
 
-  // Active question index (cycles through available questions)
   const [questionIdx, setQuestionIdx] = useState(0);
   const [activeRec, setActiveRec] = useState<CoachRecommendation | null>(null);
 
@@ -278,16 +359,14 @@ export default function CoachScreen() {
     setQuestionIdx((i) => i + 1);
   };
 
-  // Visible categories: over + warning first, then any with data
   const visibleCategories = useMemo(() => {
     const withData = analysis.categories.filter((c) => c.monthTotal > 0);
-    const sorted = [
+    return [
       ...withData.filter((c) => c.status === 'over'),
       ...withData.filter((c) => c.status === 'warning'),
       ...withData.filter((c) => c.status === 'ok'),
       ...withData.filter((c) => c.status === 'nobudget'),
     ];
-    return sorted;
   }, [analysis]);
 
   const hasData = transactions.length > 0;
@@ -363,9 +442,9 @@ export default function CoachScreen() {
           </View>
         )}
 
-        {/* Active question or recommendation */}
         {hasData && (
           <>
+            {/* Active question or recommendation */}
             {activeQuestion && !activeRec && (
               <View>
                 <View style={s.sectionHeader}>
@@ -432,10 +511,14 @@ export default function CoachScreen() {
             {visibleCategories.length > 0 && (
               <View>
                 <Text style={s.sectionTitlePlain}>Analisi per categoria</Text>
-                <Text style={s.sectionSub}>Tocca una categoria per i dettagli</Text>
+                <Text style={s.sectionSub}>Tocca per vedere le spese dettagliate</Text>
                 <View style={s.catList}>
                   {visibleCategories.map((ca) => (
-                    <CategoryCard key={ca.category} ca={ca} />
+                    <CategoryCard
+                      key={ca.category}
+                      ca={ca}
+                      totalExpenses={analysis.totalExpenses}
+                    />
                   ))}
                 </View>
               </View>
@@ -483,9 +566,7 @@ const s = StyleSheet.create({
     width: 74, height: 74, borderRadius: 37,
     borderWidth: 2.5, alignItems: 'center', justifyContent: 'center',
   },
-  ringScoreRow: {
-    flexDirection: 'row', alignItems: 'flex-end', gap: 1,
-  },
+  ringScoreRow: { flexDirection: 'row', alignItems: 'flex-end', gap: 1 },
   ringScore: { fontSize: 26, fontWeight: '800', letterSpacing: -1, lineHeight: 30 },
   ringMax: { fontSize: 11, fontWeight: '500', color: Colors.text.muted, marginBottom: 3 },
   ringLabel: { ...Typography.micro, fontWeight: '700' },
@@ -498,7 +579,7 @@ const s = StyleSheet.create({
   sectionHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 10 },
   sectionTitle: { ...Typography.h3, color: Colors.text.primary, flex: 1 },
   sectionTitlePlain: { ...Typography.h3, color: Colors.text.primary, marginBottom: 4 },
-  sectionSub: { ...Typography.caption, color: Colors.text.muted, marginBottom: 12 },
+  sectionSub: { ...Typography.caption, color: Colors.text.secondary, marginBottom: 12 },
   questionCounter: { ...Typography.caption, color: Colors.text.muted },
 
   // Question card
@@ -549,7 +630,7 @@ const s = StyleSheet.create({
   },
   statItem: { alignItems: 'center', gap: 3 },
   statValue: { ...Typography.bodyMedium, color: Colors.text.primary, fontWeight: '700' },
-  statLabel: { ...Typography.micro, color: Colors.text.muted },
+  statLabel: { ...Typography.micro, color: Colors.text.secondary },
   statDivider: { width: 1, backgroundColor: Colors.border.default },
 
   // Category list
@@ -563,8 +644,10 @@ const s = StyleSheet.create({
   catIconWrap: { width: 36, height: 36, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
   catInfo: { flex: 1, gap: 2 },
   catLabel: { ...Typography.caption, color: Colors.text.secondary, fontWeight: '600' },
+  catAmountRow: { flexDirection: 'row', alignItems: 'baseline', flexWrap: 'wrap' },
   catAmount: { ...Typography.bodyMedium, color: Colors.text.primary, fontWeight: '700' },
-  catBudget: { ...Typography.caption, color: Colors.text.muted, fontWeight: '400' },
+  catBudget: { ...Typography.caption, color: Colors.text.secondary, fontWeight: '400' },
+  catPct: { ...Typography.caption, color: Colors.text.muted },
   catRight: { alignItems: 'flex-end', gap: 4 },
   statusBadge: { borderRadius: Radius.sm, paddingHorizontal: 8, paddingVertical: 3 },
   statusText: { ...Typography.micro, fontWeight: '700' },
@@ -575,23 +658,86 @@ const s = StyleSheet.create({
   barBg: { height: 4, backgroundColor: Colors.border.default, borderRadius: 2, overflow: 'hidden' },
   barFill: { height: 4, borderRadius: 2 },
 
-  // Merchants
+  // Merchant chips — FIXED: testo bianco leggibile, chip con border sinistro colorato
   merchantRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
   merchantChip: {
-    flexDirection: 'row', alignItems: 'center', gap: 4,
-    backgroundColor: Colors.bg.elevated,
-    borderRadius: Radius.sm, paddingHorizontal: 8, paddingVertical: 4,
+    flexDirection: 'row', alignItems: 'center', gap: 5,
+    backgroundColor: Colors.bg.secondary,
+    borderRadius: Radius.sm,
+    borderWidth: 1, borderColor: Colors.border.default,
+    borderLeftWidth: 3,
+    paddingHorizontal: 8, paddingVertical: 5,
   },
-  merchantName: { ...Typography.micro, color: Colors.text.secondary, maxWidth: 100 },
-  merchantCount: { ...Typography.micro, color: Colors.text.muted, fontWeight: '700' },
+  merchantName: { ...Typography.micro, color: Colors.text.primary, maxWidth: 90, fontWeight: '500' },
+  merchantAmount: { ...Typography.micro, color: Colors.text.primary, fontWeight: '700' },
+  merchantCount: { ...Typography.micro, color: Colors.text.secondary },
 
-  // Expanded details
-  expandedSection: { gap: 6, paddingTop: 4 },
-  expandedDetail: { ...Typography.caption, color: Colors.text.muted },
-  expandedDetailBold: { color: Colors.text.primary, fontWeight: '700' },
-  recurringList: { gap: 3 },
-  recurringTitle: { ...Typography.micro, color: Colors.text.muted, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.5 },
-  recurringItem: { ...Typography.caption, color: Colors.text.secondary },
+  // Expanded section
+  expandedSection: { gap: 12, paddingTop: 4 },
+
+  // Quick stats in expanded
+  expandedStats: {
+    flexDirection: 'row',
+    backgroundColor: Colors.bg.secondary,
+    borderRadius: Radius.md,
+    padding: 12,
+    justifyContent: 'space-around',
+    borderWidth: 1, borderColor: Colors.border.subtle,
+  },
+  expandedStat: { alignItems: 'center', gap: 2 },
+  expandedStatValue: { ...Typography.bodyMedium, color: Colors.text.primary, fontWeight: '700' },
+  expandedStatLabel: { ...Typography.micro, color: Colors.text.secondary },
+  expandedStatDiv: { width: 1, backgroundColor: Colors.border.default },
+
+  // Weekend vs weekday split
+  splitRow: { flexDirection: 'row', gap: 8 },
+  splitItem: { flex: 1, gap: 6 },
+  splitBar: { height: 6, borderRadius: 3, overflow: 'hidden' },
+  splitBarFill: { height: '100%', borderRadius: 3 },
+  splitLabels: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  splitLabelText: { ...Typography.micro, color: Colors.text.secondary },
+  splitLabelValue: { ...Typography.micro, color: Colors.text.primary, fontWeight: '700' },
+
+  // Top transactions list
+  txSection: {
+    backgroundColor: Colors.bg.secondary,
+    borderRadius: Radius.md,
+    borderWidth: 1, borderColor: Colors.border.subtle,
+    overflow: 'hidden',
+  },
+  txSectionTitle: {
+    ...Typography.micro,
+    color: Colors.text.secondary,
+    fontWeight: '700',
+    letterSpacing: 0.8,
+    paddingHorizontal: 12, paddingTop: 10, paddingBottom: 6,
+  },
+  txRow: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: 12, paddingVertical: 9,
+  },
+  txRowBorder: { borderBottomWidth: 1, borderBottomColor: Colors.border.subtle },
+  txInfo: { flex: 1, gap: 1, paddingRight: 8 },
+  txDesc: { ...Typography.caption, color: Colors.text.primary, fontWeight: '500' },
+  txDate: { ...Typography.micro, color: Colors.text.secondary },
+  txAmount: { ...Typography.caption, color: Colors.text.primary, fontWeight: '700' },
+
+  // Recurring
+  recurringSection: {
+    backgroundColor: Colors.accent.glow,
+    borderRadius: Radius.md,
+    borderWidth: 1, borderColor: Colors.border.accent,
+    overflow: 'hidden',
+    paddingBottom: 6,
+  },
+  recurringRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    paddingHorizontal: 12, paddingVertical: 7,
+  },
+  recurringDesc: { ...Typography.caption, color: Colors.text.primary, flex: 1, fontWeight: '500' },
+  recurringAmt: { ...Typography.caption, color: Colors.accent.primary, fontWeight: '700' },
+
+  // Chevron
   chevronRow: { alignItems: 'center', marginTop: 2 },
 
   // Empty / all done

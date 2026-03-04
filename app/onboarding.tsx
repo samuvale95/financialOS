@@ -11,6 +11,8 @@ import {
   KeyboardAvoidingView,
   Keyboard,
   Platform,
+  Modal,
+  Pressable,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -33,7 +35,9 @@ import { parseCSV } from '../utils/parsers';
 import { parseExcel } from '../utils/excelParser';
 import { ITALIAN_BANKS } from '../constants/italianBanks';
 import type { ItalianBank } from '../constants/italianBanks';
-import { CATEGORIES } from '../constants/categories';
+import { CATEGORIES, EXPENSE_CATEGORIES } from '../constants/categories';
+import type { CategoryId } from '../constants/categories';
+import { getMerchantKey } from '../utils/categorizer';
 import type {
   BankAccount, OnboardingGoalId, EffortLevel, IncomeSource, IncomeType,
   StoredBudget, Asset, FamilyStatus, HousingType, WorkType, IncomeStability,
@@ -44,11 +48,20 @@ import type { Transaction } from '../types';
 
 interface PendingAccount { bankId: string; bankName: string; accountLabel: string; balance: number; }
 interface PendingAsset extends Omit<Asset, 'id'> {}
-interface ImportResult { transactions: Omit<Transaction, 'id'>[]; bankName: string; }
+interface ImportedFile {
+  id: string;
+  fileName: string;
+  bankName: string;
+  accountIndex: number | null; // index into WizardState.accounts; null = not assigned
+  transactions: Omit<Transaction, 'id'>[];
+}
 interface CategoryInsight {
   id: string; name: string; icon: string;
-  monthlySpent: number; budget: number; percentOfIncome: number;
+  color: string; bgColor: string;
+  monthlySpent: number; monthsCount: number; budget: number; percentOfIncome: number;
   status: 'ok' | 'warning' | 'over';
+  topMerchants: { name: string; total: number; count: number }[];
+  topTxs: { txKey: string; merchantKey: string; displayName: string; rawDescription: string; amount: number; date: string; category: CategoryId }[];
 }
 
 interface WizardState {
@@ -80,10 +93,12 @@ interface WizardState {
   // Step 7: Obiettivi & Impegno
   mainGoal: OnboardingGoalId | null;
   effortLevel: EffortLevel | null;
-  // Step 8: Importa
-  imported: ImportResult | null;
+  // Step 9: Importa (multipli file)
+  importedFiles: ImportedFile[];
   // Step 9: Budget edits
   budgetEdits: Record<string, string>;
+  // Step 10: Merchant-level overrides (merchantKey → CategoryId), applied to all matching transactions
+  merchantOverrides: Record<string, CategoryId>;
 }
 
 const INIT_STATE: WizardState = {
@@ -92,7 +107,7 @@ const INIT_STATE: WizardState = {
   region: null, housingType: null, housingCost: '',
   workType: null, workSector: null, incomeStability: null,
   incomeSources: [], accounts: [], hasCrypto: null, cryptoAssets: [], hasInvestments: null, assets: [],
-  mainGoal: null, effortLevel: null, imported: null, budgetEdits: {},
+  mainGoal: null, effortLevel: null, importedFiles: [], budgetEdits: {}, merchantOverrides: {},
 };
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -179,36 +194,101 @@ function fmtEur(n: number): string {
   return `€${Math.round(n).toLocaleString('it-IT')}`;
 }
 
+function mergeImportedFiles(
+  files: ImportedFile[],
+  accountIds?: string[]
+): Omit<Transaction, 'id'>[] {
+  const seen = new Set<string>();
+  const result: Omit<Transaction, 'id'>[] = [];
+  for (let fi = 0; fi < files.length; fi++) {
+    const file = files[fi];
+    const accountId = accountIds && file.accountIndex !== null ? accountIds[file.accountIndex] : undefined;
+    for (const tx of file.transactions) {
+      const key = `${tx.date}|${tx.amount}|${tx.description}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        result.push(accountId ? { ...tx, accountId } : tx);
+      }
+    }
+  }
+  return result;
+}
+
 function getCategoryInsights(
   txs: Omit<Transaction, 'id'>[] | null,
   budgets: StoredBudget[],
-  income: number
+  income: number,
+  merchantOverrides: Record<string, CategoryId> = {}
 ): CategoryInsight[] {
   if (!txs || txs.length === 0 || income <= 0) return [];
+
+  const effectiveCatFor = (tx: Omit<Transaction, 'id'>) => {
+    const mKey = getMerchantKey(tx as any);
+    return merchantOverrides[mKey] ?? tx.category;
+  };
+
   const spentByCategory: Record<string, number> = {};
   for (const tx of txs) {
     if (tx.amount < 0) {
-      spentByCategory[tx.category] = (spentByCategory[tx.category] || 0) + Math.abs(tx.amount);
+      const cat = effectiveCatFor(tx);
+      spentByCategory[cat] = (spentByCategory[cat] || 0) + Math.abs(tx.amount);
     }
   }
-  const dates = txs.map(t => t.date).sort();
-  const first = new Date(dates[0]);
-  const last = new Date(dates[dates.length - 1]);
-  const months = Math.max(1, Math.round((last.getTime() - first.getTime()) / (30 * 24 * 60 * 60 * 1000))) || 1;
+  // Count distinct calendar months (YYYY-MM) for an accurate monthly average
+  const months = Math.max(1, new Set(txs.map(t => t.date.slice(0, 7))).size);
 
   return budgets
     .map(b => {
       const total = spentByCategory[b.category] || 0;
       const monthly = total / months;
       const cat = CATEGORIES[b.category];
+
+      // Top merchants for this category (respecting merchant overrides)
+      const catTxs = (txs ?? []).filter(t => {
+        if (t.amount >= 0) return false;
+        return effectiveCatFor(t) === b.category;
+      });
+      const merchantMap = new Map<string, { total: number; count: number }>();
+      for (const tx of catTxs) {
+        const key = ((tx as any).merchant || tx.description).trim().slice(0, 35);
+        const e = merchantMap.get(key) ?? { total: 0, count: 0 };
+        merchantMap.set(key, { total: e.total + Math.abs(tx.amount), count: e.count + 1 });
+      }
+      const topMerchants = Array.from(merchantMap.entries())
+        .map(([name, s]) => ({ name, ...s }))
+        .sort((a, b) => b.total - a.total)
+        .slice(0, 3);
+
+      const topTxs = [...catTxs]
+        .sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount))
+        .slice(0, 8)
+        .map(t => {
+          const txKey = `${t.date}|${t.amount}|${t.description}`;
+          const mKey = getMerchantKey(t as any);
+          return {
+            txKey,
+            merchantKey: mKey,
+            displayName: ((t as any).merchant || t.description) as string,
+            rawDescription: t.description,
+            amount: Math.abs(t.amount),
+            date: t.date,
+            category: effectiveCatFor(t),
+          };
+        });
+
       return {
         id: b.category,
         name: cat?.label ?? b.category,
-        icon: cat?.icon ?? '💰',
+        icon: cat?.icon ?? 'cash',
+        color: cat?.color ?? Colors.accent.primary,
+        bgColor: cat?.bgColor ?? Colors.accent.glow,
         monthlySpent: Math.round(monthly),
+        monthsCount: months,
         budget: b.limit,
         percentOfIncome: Math.round((monthly / income) * 100),
         status: monthly > b.limit * 1.2 ? 'over' as const : monthly > b.limit * 0.85 ? 'warning' as const : 'ok' as const,
+        topMerchants,
+        topTxs,
       };
     })
     .filter(i => i.monthlySpent > 0)
@@ -218,11 +298,10 @@ function getCategoryInsights(
 function computeScore(state: WizardState, budgets: StoredBudget[]): number {
   let score = 35;
   const income = totalMonthlyIncome(state.incomeSources);
-  const txs = state.imported?.transactions ?? null;
+  const txs = mergeImportedFiles(state.importedFiles);
 
-  if (txs && txs.length > 0 && income > 0) {
-    const dates = txs.map(t => t.date).sort();
-    const months = Math.max(1, Math.round((new Date(dates[dates.length - 1]).getTime() - new Date(dates[0]).getTime()) / (30 * 24 * 60 * 60 * 1000))) || 1;
+  if (txs.length > 0 && income > 0) {
+    const months = Math.max(1, new Set(txs.map(t => t.date.slice(0, 7))).size);
     const monthlyExp = txs.filter(t => t.amount < 0).reduce((s, t) => s + Math.abs(t.amount), 0) / months;
     const savingsRate = income > 0 ? (income - monthlyExp) / income : 0;
     if (savingsRate >= 0.25) score += 25;
@@ -231,7 +310,7 @@ function computeScore(state: WizardState, budgets: StoredBudget[]): number {
     else if (savingsRate >= 0) score += 3;
     else score -= 8;
 
-    const insights = getCategoryInsights(txs, budgets, income);
+    const insights = getCategoryInsights(txs, budgets, income, state.merchantOverrides);
     score += insights.filter(i => i.status === 'ok').length * 2;
     score -= insights.filter(i => i.status === 'over').length * 4;
   } else {
@@ -741,7 +820,7 @@ function IncomeForm({ onAdd }: { onAdd: (s: IncomeSource) => void }) {
 // ── Main wizard ───────────────────────────────────────────────────────────────
 
 export default function OnboardingScreen() {
-  const { addAccount, addAsset, addTransactions, setBudgetLimit } = useData();
+  const { addAccount, addAsset, addTransactions, setBudgetLimit, setMerchantRule } = useData();
   const [state, setState] = useState<WizardState>(INIT_STATE);
   const [importing, setImporting] = useState(false);
   const [regionSearch, setRegionSearch] = useState('');
@@ -749,6 +828,9 @@ export default function OnboardingScreen() {
   const [showAddAccount, setShowAddAccount] = useState(false);
   const [showAddIncome, setShowAddIncome] = useState(false);
   const [completing, setCompleting] = useState(false);
+  const [expandedCategories, setExpandedCategories] = useState<Record<string, boolean>>({});
+  type TxDetail = { txKey: string; merchantKey: string; displayName: string; rawDescription: string; amount: number; date: string; category: CategoryId };
+  const [selectedTxDetail, setSelectedTxDetail] = useState<TxDetail | null>(null);
   const scrollRef = useRef<ScrollView>(null);
 
   const set = useCallback((patch: Partial<WizardState>) =>
@@ -800,34 +882,45 @@ export default function OnboardingScreen() {
     return calculateBudgets(income, state.mainGoal ? [state.mainGoal] : [], state.effortLevel ?? 'moderato', ctx);
   }, [income, state.householdSize, state.housingType, state.housingCost, state.region, state.dependents, state.mainGoal, state.effortLevel]);
 
+  const mergedTxs = useMemo(() => mergeImportedFiles(state.importedFiles), [state.importedFiles]);
+
   const categoryInsights = useMemo(() =>
-    getCategoryInsights(state.imported?.transactions ?? null, calculatedBudgets, income),
-    [state.imported, calculatedBudgets, income]
+    getCategoryInsights(mergedTxs.length > 0 ? mergedTxs : null, calculatedBudgets, income, state.merchantOverrides),
+    [mergedTxs, calculatedBudgets, income, state.merchantOverrides]
   );
   const score = useMemo(() => computeScore(state, calculatedBudgets), [state, calculatedBudgets]);
   const sl = scoreLabel(score);
   const tips = useMemo(() => generateTips(categoryInsights, state), [categoryInsights, state]);
 
-  const handleImport = async (type: 'csv' | 'excel') => {
+  const handleImport = async () => {
     try {
       setImporting(true);
-      const res = await DocumentPicker.getDocumentAsync({
-        type: type === 'csv' ? 'text/*' : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-        copyToCacheDirectory: true,
-      });
+      const res = await DocumentPicker.getDocumentAsync({ type: ['*/*'], copyToCacheDirectory: true });
       if (res.canceled || !res.assets?.[0]) { setImporting(false); return; }
-      const uri = res.assets[0].uri;
-      const result = type === 'csv'
-        ? parseCSV(await FileSystem.readAsStringAsync(uri))
-        : await parseExcel(uri);
+      const asset = res.assets[0];
+      const name = (asset.name ?? '').toLowerCase();
+
+      let result;
+      if (name.endsWith('.csv') || name.endsWith('.txt')) {
+        result = parseCSV(await FileSystem.readAsStringAsync(asset.uri));
+      } else {
+        result = await parseExcel(asset.uri);
+      }
+
       if (result.transactions.length === 0) {
         Alert.alert('Nessuna transazione', 'Il file non contiene transazioni valide.');
         setImporting(false); return;
       }
-      set({ imported: { transactions: result.transactions, bankName: result.bankName } });
-      Alert.alert('Importato', `${result.transactions.length} transazioni da ${result.bankName}${result.skipped > 0 ? ` (${result.skipped} righe saltate)` : ''}.`);
+      const newFile: ImportedFile = {
+        id: `imp_${Date.now()}`,
+        fileName: asset.name ?? 'file',
+        bankName: result.bankName,
+        accountIndex: null,
+        transactions: result.transactions,
+      };
+      setState(s => ({ ...s, importedFiles: [...s.importedFiles, newFile] }));
     } catch {
-      Alert.alert('Errore', 'Impossibile leggere il file.');
+      Alert.alert('Errore', 'Impossibile leggere il file. Verifica che sia un foglio di calcolo valido (.xlsx, .csv).');
     } finally {
       setImporting(false);
     }
@@ -837,7 +930,11 @@ export default function OnboardingScreen() {
     if (completing) return;
     setCompleting(true);
     try {
-      for (const acc of state.accounts) addAccount({ ...acc, lastUpdated: new Date().toISOString() });
+      const ts = Date.now();
+      const accountIds = state.accounts.map((_, i) => `acc_${ts}_${i}`);
+      for (let i = 0; i < state.accounts.length; i++) {
+        addAccount({ ...state.accounts[i], lastUpdated: new Date().toISOString() }, accountIds[i]);
+      }
       for (const a of [...state.cryptoAssets, ...state.assets]) addAsset(a);
       const finalBudgets = calculatedBudgets;
       for (const b of finalBudgets) {
@@ -845,7 +942,12 @@ export default function OnboardingScreen() {
         const limit = override !== undefined ? (parseInt(override, 10) || b.limit) : b.limit;
         setBudgetLimit(b.category, limit);
       }
-      if (state.imported) addTransactions(state.imported.transactions);
+      // Persist merchant overrides set during onboarding
+      for (const [key, cat] of Object.entries(state.merchantOverrides)) {
+        setMerchantRule(key, cat as CategoryId);
+      }
+      const mergedForSave = mergeImportedFiles(state.importedFiles, accountIds);
+      if (mergedForSave.length > 0) addTransactions(mergedForSave);
       await saveOnboardingData({
         completed: true,
         completedAt: new Date().toISOString(),
@@ -1345,48 +1447,89 @@ export default function OnboardingScreen() {
           </>
         );
 
-      // ── Step 9: Importa estratto conto ────────────────────────────────────
-      case 9:
+      // ── Step 9: Importa estratti conto (multi-file) ───────────────────────
+      case 9: {
+        const totalRaw = state.importedFiles.reduce((s, f) => s + f.transactions.length, 0);
+        const dedupRemoved = totalRaw - mergedTxs.length;
         return (
           <>
-            <Text style={s.stepTitle}>Estratto conto</Text>
+            <Text style={s.stepTitle}>Estratti conto</Text>
             <Text style={s.stepSubtitle}>
-              Importa le transazioni per ricevere un'analisi precisa delle tue spese. Puoi saltare e farlo in seguito.
+              Carica uno o più file. Se ci sono transazioni duplicate tra i file vengono rimosse automaticamente.
             </Text>
 
-            {state.imported ? (
-              <View style={s.importedCard}>
-                <Ionicons name="checkmark-circle" size={32} color={Colors.semantic.success} />
-                <View style={{ flex: 1 }}>
-                  <Text style={s.importedTitle}>{state.imported.bankName}</Text>
-                  <Text style={s.importedSub}>{state.imported.transactions.length} transazioni importate</Text>
-                </View>
-                <TouchableOpacity onPress={() => set({ imported: null })}>
-                  <Ionicons name="close-circle" size={20} color={Colors.text.muted} />
-                </TouchableOpacity>
-              </View>
-            ) : (
-              <View style={s.importButtons}>
-                {importing ? (
-                  <View style={s.importingRow}>
-                    <ActivityIndicator color={Colors.accent.primary} />
-                    <Text style={s.loadingText}>Elaborazione file…</Text>
+            {/* Imported files list */}
+            {state.importedFiles.map((file, fi) => (
+              <View key={file.id} style={s.importedCard}>
+                <View style={s.importedCardTop}>
+                  <Ionicons name="document-text" size={22} color={Colors.accent.primary} />
+                  <View style={{ flex: 1 }}>
+                    <Text style={s.importedTitle} numberOfLines={1}>{file.fileName}</Text>
+                    <Text style={s.importedSub}>{file.bankName} · {file.transactions.length} transazioni</Text>
                   </View>
-                ) : (
-                  <>
-                    <TouchableOpacity style={s.importBtn} onPress={() => handleImport('csv')} activeOpacity={0.7}>
-                      <Ionicons name="document-text-outline" size={24} color={Colors.accent.primary} />
-                      <Text style={s.importBtnLabel}>CSV</Text>
-                      <Text style={s.importBtnDesc}>File .csv dalla banca</Text>
+                  <TouchableOpacity
+                    onPress={() => setState(s => ({ ...s, importedFiles: s.importedFiles.filter(f => f.id !== file.id) }))}
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  >
+                    <Ionicons name="close-circle" size={20} color={Colors.text.muted} />
+                  </TouchableOpacity>
+                </View>
+                {state.accounts.length > 0 && (
+                  <View style={s.accountChipRow}>
+                    <Text style={s.accountChipLabel}>Conto:</Text>
+                    <TouchableOpacity
+                      style={[s.accountChip, file.accountIndex === null && s.accountChipActive]}
+                      onPress={() => setState(s => ({
+                        ...s,
+                        importedFiles: s.importedFiles.map(f => f.id === file.id ? { ...f, accountIndex: null } : f),
+                      }))}
+                      activeOpacity={0.7}
+                    >
+                      <Text style={[s.accountChipText, file.accountIndex === null && s.accountChipTextActive]}>Nessuno</Text>
                     </TouchableOpacity>
-                    <TouchableOpacity style={s.importBtn} onPress={() => handleImport('excel')} activeOpacity={0.7}>
-                      <Ionicons name="grid-outline" size={24} color={Colors.semantic.success} />
-                      <Text style={s.importBtnLabel}>Excel</Text>
-                      <Text style={s.importBtnDesc}>File .xlsx dalla banca</Text>
-                    </TouchableOpacity>
-                  </>
+                    {state.accounts.map((acc, ai) => (
+                      <TouchableOpacity
+                        key={ai}
+                        style={[s.accountChip, file.accountIndex === ai && s.accountChipActive]}
+                        onPress={() => setState(s => ({
+                          ...s,
+                          importedFiles: s.importedFiles.map(f => f.id === file.id ? { ...f, accountIndex: ai } : f),
+                        }))}
+                        activeOpacity={0.7}
+                      >
+                        <Text style={[s.accountChipText, file.accountIndex === ai && s.accountChipTextActive]} numberOfLines={1}>
+                          {acc.accountLabel || acc.bankName}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
                 )}
               </View>
+            ))}
+
+            {/* Dedup info */}
+            {dedupRemoved > 0 && (
+              <View style={s.dedupNote}>
+                <Ionicons name="information-circle-outline" size={15} color={Colors.accent.primary} />
+                <Text style={s.dedupNoteText}>
+                  {dedupRemoved} transazioni duplicate rimosse · {mergedTxs.length} uniche totali
+                </Text>
+              </View>
+            )}
+
+            {/* Add file button */}
+            {importing ? (
+              <View style={s.importingRow}>
+                <ActivityIndicator color={Colors.accent.primary} />
+                <Text style={s.loadingText}>Elaborazione file…</Text>
+              </View>
+            ) : (
+              <TouchableOpacity style={s.addFileBtn} onPress={handleImport} activeOpacity={0.7}>
+                <Ionicons name="add-circle-outline" size={20} color={Colors.accent.primary} />
+                <Text style={s.addFileBtnText}>
+                  {state.importedFiles.length === 0 ? 'Aggiungi file (CSV o Excel)' : 'Aggiungi altro file'}
+                </Text>
+              </TouchableOpacity>
             )}
 
             <View style={s.importNote}>
@@ -1395,6 +1538,7 @@ export default function OnboardingScreen() {
             </View>
           </>
         );
+      }
 
       // ── Step 10: Analisi & Budget ─────────────────────────────────────────
       case 10:
@@ -1402,7 +1546,7 @@ export default function OnboardingScreen() {
           <>
             <Text style={s.stepTitle}>La tua analisi</Text>
             <Text style={s.stepSubtitle}>
-              {state.imported ? 'Basata sulle transazioni importate e sul tuo profilo' : 'Basata sul tuo profilo — importa un estratto per analisi più precise'}
+              {mergedTxs.length > 0 ? `Basata su ${mergedTxs.length} transazioni importate e sul tuo profilo` : 'Basata sul tuo profilo — importa un estratto per analisi più precise'}
             </Text>
 
             {/* Score circle */}
@@ -1421,31 +1565,97 @@ export default function OnboardingScreen() {
             {categoryInsights.length > 0 && (
               <View style={s.insightsSection}>
                 <Text style={s.sectionHeader}>📊 Analisi spese</Text>
-                {categoryInsights.map(ci => (
-                  <View key={ci.id} style={s.insightRow}>
-                    <View style={s.insightLeft}>
-                      <Text style={s.insightIcon}>{ci.icon}</Text>
-                      <View>
-                        <Text style={s.insightName}>{ci.name}</Text>
-                        <Text style={s.insightMeta}>{ci.percentOfIncome}% del reddito</Text>
-                      </View>
+                {categoryInsights.map(ci => {
+                  const statusColor = ci.status === 'over' ? Colors.semantic.danger : ci.status === 'warning' ? Colors.semantic.warning : Colors.semantic.success;
+                  const isExpanded = !!expandedCategories[ci.id];
+                  const txsToShow = ci.topTxs;
+                  return (
+                    <View key={ci.id} style={s.insightRow}>
+                      {/* Tappable header */}
+                      <TouchableOpacity
+                        style={s.insightHeader}
+                        activeOpacity={0.7}
+                        onPress={() => setExpandedCategories(p => ({ ...p, [ci.id]: !p[ci.id] }))}
+                      >
+                        <View style={s.insightLeft}>
+                          <View style={[s.insightIconWrap, { backgroundColor: ci.bgColor }]}>
+                            <Ionicons name={ci.icon as any} size={18} color={ci.color} />
+                          </View>
+                          <View>
+                            <Text style={s.insightName}>{ci.name}</Text>
+                            <Text style={s.insightMeta}>
+                              {ci.percentOfIncome}% del reddito
+                              {ci.monthsCount > 1 ? ` · media ${ci.monthsCount} mesi` : ''}
+                            </Text>
+                          </View>
+                        </View>
+                        <View style={s.insightRight}>
+                          <Text style={[s.insightAmount, { color: statusColor }]}>
+                            {fmtEur(ci.monthlySpent)}/m
+                          </Text>
+                          <Text style={s.insightBudget}>budget {fmtEur(ci.budget)}</Text>
+                        </View>
+                        {ci.status !== 'ok' ? (
+                          <Ionicons
+                            name={ci.status === 'over' ? 'alert-circle' : 'warning'}
+                            size={16}
+                            color={statusColor}
+                            style={{ marginLeft: 6 }}
+                          />
+                        ) : (
+                          <Ionicons
+                            name={isExpanded ? 'chevron-up' : 'chevron-down'}
+                            size={14}
+                            color={Colors.text.muted}
+                            style={{ marginLeft: 6 }}
+                          />
+                        )}
+                      </TouchableOpacity>
+
+                      {/* Expanded: transaction list — tap to open detail/reclassify modal */}
+                      {isExpanded && txsToShow.length > 0 && (
+                        <View style={[s.insightDetail, { borderLeftColor: statusColor }]}>
+                          <Text style={s.insightDetailHeader}>TRANSAZIONI (tocca per dettaglio)</Text>
+                          {txsToShow.map((t, i) => {
+                            const txCat = CATEGORIES[t.category];
+                            return (
+                              <TouchableOpacity
+                                key={i}
+                                style={s.insightTxRow}
+                                onPress={() => setSelectedTxDetail(t)}
+                                activeOpacity={0.7}
+                              >
+                                <View style={s.insightTxInfo}>
+                                  <Text style={s.insightDetailName} numberOfLines={1}>{t.displayName}</Text>
+                                  <Text style={s.insightTxDate}>{t.date.slice(0, 7)}</Text>
+                                </View>
+                                <Text style={s.insightDetailVal}>€{t.amount.toFixed(0)}</Text>
+                                <View style={[s.txCatChip, { backgroundColor: txCat?.bgColor ?? Colors.accent.glow }]}>
+                                  <Ionicons name={(txCat?.icon ?? 'help') as any} size={11} color={txCat?.color ?? Colors.accent.primary} />
+                                </View>
+                              </TouchableOpacity>
+                            );
+                          })}
+                        </View>
+                      )}
+
+                      {/* For over/warning, also show merchants when NOT expanded */}
+                      {!isExpanded && ci.status !== 'ok' && ci.topMerchants.length > 0 && (
+                        <View style={[s.insightDetail, { borderLeftColor: statusColor }]}>
+                          {ci.topMerchants.slice(0, 2).map(m => (
+                            <View key={m.name} style={s.insightDetailRow}>
+                              <Text style={s.insightDetailName} numberOfLines={1}>{m.name}</Text>
+                              <Text style={s.insightDetailVal}>€{m.total.toFixed(0)} · {m.count}×</Text>
+                            </View>
+                          ))}
+                          <TouchableOpacity onPress={() => setExpandedCategories(p => ({ ...p, [ci.id]: true }))} activeOpacity={0.7}>
+                            <Text style={s.insightShowMore}>Vedi tutte le transazioni →</Text>
+                          </TouchableOpacity>
+                        </View>
+                      )}
                     </View>
-                    <View style={s.insightRight}>
-                      <Text style={[s.insightAmount, ci.status === 'over' ? { color: Colors.semantic.danger } : ci.status === 'warning' ? { color: Colors.semantic.warning } : { color: Colors.semantic.success }]}>
-                        {fmtEur(ci.monthlySpent)}/m
-                      </Text>
-                      <Text style={s.insightBudget}>budget {fmtEur(ci.budget)}</Text>
-                    </View>
-                    {ci.status !== 'ok' && (
-                      <Ionicons
-                        name={ci.status === 'over' ? 'alert-circle' : 'warning'}
-                        size={16}
-                        color={ci.status === 'over' ? Colors.semantic.danger : Colors.semantic.warning}
-                        style={{ marginLeft: 8 }}
-                      />
-                    )}
-                  </View>
-                ))}
+                  );
+                })}
               </View>
             )}
 
@@ -1480,7 +1690,9 @@ export default function OnboardingScreen() {
                   const cat = CATEGORIES[b.category];
                   return (
                     <View key={b.id} style={s.budgetRow}>
-                      <Text style={s.budgetIcon}>{cat?.icon ?? '💰'}</Text>
+                      <View style={[s.budgetIconWrap, { backgroundColor: cat?.bgColor ?? Colors.accent.glow }]}>
+                        <Ionicons name={(cat?.icon ?? 'cash') as any} size={16} color={cat?.color ?? Colors.accent.primary} />
+                      </View>
                       <Text style={s.budgetName}>{cat?.label ?? b.category}</Text>
                       <View style={s.budgetInputWrap}>
                         <Text style={s.budgetEur}>€</Text>
@@ -1533,10 +1745,10 @@ export default function OnboardingScreen() {
                   <Text style={s.summaryCardLabel}>in portfolio</Text>
                 </View>
               )}
-              {state.imported && (
+              {mergedTxs.length > 0 && (
                 <View style={s.summaryCard}>
                   <Ionicons name="analytics-outline" size={22} color={Colors.semantic.success} />
-                  <Text style={s.summaryCardValue}>{state.imported.transactions.length} tx</Text>
+                  <Text style={s.summaryCardValue}>{mergedTxs.length} tx</Text>
                   <Text style={s.summaryCardLabel}>importate</Text>
                 </View>
               )}
@@ -1610,6 +1822,80 @@ export default function OnboardingScreen() {
           )}
         </View>
       </KeyboardAvoidingView>
+
+      {/* Transaction detail modal */}
+      <Modal
+        visible={selectedTxDetail !== null}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setSelectedTxDetail(null)}
+      >
+        <Pressable style={s.modalOverlay} onPress={() => setSelectedTxDetail(null)}>
+          <Pressable style={s.modalSheet} onPress={() => {}}>
+            {selectedTxDetail && (() => {
+              const det = selectedTxDetail;
+              const currentCatId = state.merchantOverrides[det.merchantKey] ?? det.category;
+              const currentCat = CATEGORIES[currentCatId];
+              return (
+                <>
+                  {/* Header */}
+                  <View style={s.modalHeader}>
+                    <View style={[s.modalCatIcon, { backgroundColor: currentCat?.bgColor ?? Colors.accent.glow }]}>
+                      <Ionicons name={(currentCat?.icon ?? 'help') as any} size={22} color={currentCat?.color ?? Colors.accent.primary} />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={s.modalCatLabel}>{currentCat?.label ?? currentCatId}</Text>
+                      <Text style={s.modalDate}>{det.date}</Text>
+                    </View>
+                    <Text style={s.modalAmount}>€{det.amount.toFixed(2)}</Text>
+                    <TouchableOpacity style={s.modalClose} onPress={() => setSelectedTxDetail(null)}>
+                      <Ionicons name="close" size={20} color={Colors.text.secondary} />
+                    </TouchableOpacity>
+                  </View>
+
+                  {/* Description */}
+                  <View style={s.modalBody}>
+                    {det.displayName !== det.rawDescription && (
+                      <Text style={s.modalMerchant}>{det.displayName}</Text>
+                    )}
+                    <Text style={s.modalRawDesc}>{det.rawDescription}</Text>
+                  </View>
+
+                  {/* Merchant rule scope note */}
+                  <View style={s.modalRuleNote}>
+                    <Ionicons name="link-outline" size={13} color={Colors.accent.primary} />
+                    <Text style={s.modalRuleNoteText}>
+                      Applica a tutte le transazioni di: <Text style={{ fontWeight: '700' }}>{det.merchantKey}</Text>
+                    </Text>
+                  </View>
+
+                  {/* Reclassify */}
+                  <Text style={s.modalSectionLabel}>CAMBIA CATEGORIA</Text>
+                  <View style={s.catPickerGrid}>
+                    {EXPENSE_CATEGORIES.map(cat => {
+                      const isSelected = currentCatId === cat.id;
+                      return (
+                        <TouchableOpacity
+                          key={cat.id}
+                          style={[s.catPickerChip, isSelected && { borderColor: cat.color, backgroundColor: cat.bgColor }]}
+                          onPress={() => {
+                            set({ merchantOverrides: { ...state.merchantOverrides, [det.merchantKey]: cat.id } });
+                            setSelectedTxDetail(null);
+                          }}
+                          activeOpacity={0.7}
+                        >
+                          <Ionicons name={cat.icon as any} size={13} color={isSelected ? cat.color : Colors.text.secondary} />
+                          <Text style={[s.catPickerLabel, isSelected && { color: cat.color }]}>{cat.label}</Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                </>
+              );
+            })()}
+          </Pressable>
+        </Pressable>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -1827,9 +2113,20 @@ const s = StyleSheet.create({
   importBtnDesc: { ...Typography.caption, color: Colors.text.muted, textAlign: 'center' },
   importingRow: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 20, justifyContent: 'center' },
   loadingText: { ...Typography.body, color: Colors.text.muted },
-  importedCard: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: Colors.semantic.success + '15', borderRadius: Radius.lg, borderWidth: 1, borderColor: Colors.semantic.success + '40', padding: 16 },
+  importedCard: { backgroundColor: Colors.bg.card, borderRadius: Radius.lg, borderWidth: 1, borderColor: Colors.border.default, padding: 14, gap: 10 },
+  importedCardTop: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   importedTitle: { ...Typography.bodyMedium, color: Colors.text.primary, fontWeight: '700' },
-  importedSub: { ...Typography.caption, color: Colors.text.muted },
+  importedSub: { ...Typography.caption, color: Colors.text.secondary },
+  accountChipRow: { flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
+  accountChipLabel: { ...Typography.caption, color: Colors.text.muted },
+  accountChip: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: Radius.full, borderWidth: 1, borderColor: Colors.border.default, backgroundColor: Colors.bg.elevated },
+  accountChipActive: { borderColor: Colors.accent.primary, backgroundColor: Colors.accent.primary + '20' },
+  accountChipText: { ...Typography.caption, color: Colors.text.secondary, maxWidth: 100 },
+  accountChipTextActive: { color: Colors.accent.primary, fontWeight: '600' },
+  dedupNote: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: Colors.accent.primary + '12', borderRadius: Radius.md, padding: 10 },
+  dedupNoteText: { ...Typography.caption, color: Colors.accent.primary, flex: 1 },
+  addFileBtn: { flexDirection: 'row', alignItems: 'center', gap: 8, justifyContent: 'center', padding: 16, borderRadius: Radius.lg, borderWidth: 1, borderColor: Colors.accent.primary + '50', borderStyle: 'dashed' },
+  addFileBtnText: { ...Typography.bodyMedium, color: Colors.accent.primary },
   importNote: { flexDirection: 'row', alignItems: 'center', gap: 6, justifyContent: 'center', marginTop: 8 },
   importNoteText: { ...Typography.caption, color: Colors.text.muted },
 
@@ -1837,21 +2134,40 @@ const s = StyleSheet.create({
   scoreSection: { flexDirection: 'row', alignItems: 'center', gap: 16, backgroundColor: Colors.bg.card, borderRadius: Radius.xl, borderWidth: 1, borderColor: Colors.border.default, padding: 20 },
   scoreCircle: { width: 80, height: 80, borderRadius: 40, borderWidth: 4, justifyContent: 'center', alignItems: 'center' },
   scoreValue: { fontSize: 28, fontWeight: '900' },
-  scoreMax: { ...Typography.caption, color: Colors.text.muted },
+  scoreMax: { ...Typography.caption, color: Colors.text.secondary },
   scoreLabel: { fontSize: 20, fontWeight: '800' },
-  scoreDesc: { ...Typography.caption, color: Colors.text.muted, marginTop: 4 },
+  scoreDesc: { ...Typography.caption, color: Colors.text.secondary, marginTop: 4 },
 
   // Insights
   insightsSection: { gap: 4 },
   sectionHeader: { ...Typography.bodyMedium, color: Colors.text.primary, fontWeight: '700', marginBottom: 10 },
-  insightRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: Colors.border.subtle },
+  insightRow: { paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: Colors.border.subtle, gap: 8 },
+  insightHeader: { flexDirection: 'row', alignItems: 'center' },
   insightLeft: { flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 },
-  insightIcon: { fontSize: 20 },
+  insightIconWrap: { width: 34, height: 34, borderRadius: 9, alignItems: 'center', justifyContent: 'center' },
   insightName: { ...Typography.bodyMedium, color: Colors.text.primary },
-  insightMeta: { ...Typography.caption, color: Colors.text.muted },
+  insightMeta: { ...Typography.caption, color: Colors.text.secondary },
   insightRight: { alignItems: 'flex-end' },
   insightAmount: { ...Typography.bodyMedium, fontWeight: '700' },
-  insightBudget: { ...Typography.caption, color: Colors.text.muted },
+  insightBudget: { ...Typography.caption, color: Colors.text.secondary },
+  // Detail breakdown for over/warning
+  insightDetail: {
+    marginLeft: 44, borderLeftWidth: 2, paddingLeft: 10, gap: 4,
+  },
+  insightDetailHeader: { ...Typography.caption, color: Colors.text.muted, fontWeight: '700', letterSpacing: 0.5, marginBottom: 2 },
+  insightDetailRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  insightDetailName: { ...Typography.caption, color: Colors.text.secondary, flex: 1, paddingRight: 8 },
+  insightDetailVal: { ...Typography.caption, color: Colors.text.primary, fontWeight: '700' },
+  insightTxRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 5, borderRadius: Radius.sm },
+  insightTxRowActive: { backgroundColor: Colors.accent.primary + '12' },
+  insightTxInfo: { flex: 1 },
+  insightTxDate: { ...Typography.caption, color: Colors.text.muted },
+  txCatChip: { width: 22, height: 22, borderRadius: 6, alignItems: 'center', justifyContent: 'center' },
+  insightShowMore: { ...Typography.caption, color: Colors.accent.primary, marginTop: 4 },
+  catPickerWrap: { marginTop: 6, paddingTop: 8, borderTopWidth: 1, borderTopColor: Colors.border.subtle },
+  catPickerGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 6 },
+  catPickerChip: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 8, paddingVertical: 5, borderRadius: Radius.sm, borderWidth: 1, borderColor: Colors.border.subtle, backgroundColor: Colors.bg.card },
+  catPickerLabel: { ...Typography.caption, color: Colors.text.secondary },
 
   // Tips
   tipsSection: { gap: 4 },
@@ -1862,17 +2178,33 @@ const s = StyleSheet.create({
 
   // Budgets
   budgetSection: { gap: 4 },
-  budgetNote: { ...Typography.caption, color: Colors.text.muted, marginBottom: 10 },
+  budgetNote: { ...Typography.caption, color: Colors.text.secondary, marginBottom: 10 },
   residuoBar: { flexDirection: 'row', justifyContent: 'space-between', backgroundColor: Colors.bg.card, borderRadius: Radius.md, padding: 12, marginBottom: 4 },
-  residuoLabel: { ...Typography.caption, color: Colors.text.muted },
+  residuoLabel: { ...Typography.caption, color: Colors.text.secondary },
   residuoValue: { ...Typography.caption, fontWeight: '700' },
   budgetRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: Colors.border.subtle },
-  budgetIcon: { fontSize: 18, marginRight: 8 },
+  budgetIconWrap: { width: 30, height: 30, borderRadius: 8, alignItems: 'center', justifyContent: 'center', marginRight: 10 },
   budgetName: { ...Typography.body, color: Colors.text.primary, flex: 1 },
   budgetInputWrap: { flexDirection: 'row', alignItems: 'center', backgroundColor: Colors.bg.elevated, borderRadius: Radius.md, paddingHorizontal: 8, paddingVertical: 6 },
-  budgetEur: { ...Typography.caption, color: Colors.text.muted, marginRight: 2 },
+  budgetEur: { ...Typography.caption, color: Colors.text.secondary, marginRight: 2 },
   budgetInput: { ...Typography.bodyMedium, color: Colors.text.primary, minWidth: 52, textAlign: 'right' },
-  budgetPer: { ...Typography.caption, color: Colors.text.muted, marginLeft: 2 },
+  budgetPer: { ...Typography.caption, color: Colors.text.secondary, marginLeft: 2 },
+
+  // Transaction detail modal
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'flex-end' },
+  modalSheet: { backgroundColor: Colors.bg.elevated, borderTopLeftRadius: Radius.xl, borderTopRightRadius: Radius.xl, padding: 20, paddingBottom: 36, gap: 12 },
+  modalHeader: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  modalCatIcon: { width: 44, height: 44, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
+  modalCatLabel: { ...Typography.bodyMedium, color: Colors.text.primary, fontWeight: '700' },
+  modalDate: { ...Typography.caption, color: Colors.text.secondary },
+  modalAmount: { fontSize: 20, fontWeight: '800', color: Colors.text.primary, marginRight: 4 },
+  modalClose: { padding: 6 },
+  modalBody: { backgroundColor: Colors.bg.card, borderRadius: Radius.md, padding: 12, gap: 4 },
+  modalMerchant: { ...Typography.bodyMedium, color: Colors.text.primary, fontWeight: '600' },
+  modalRawDesc: { ...Typography.caption, color: Colors.text.secondary, lineHeight: 18 },
+  modalRuleNote: { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: Colors.accent.primary + '12', borderRadius: Radius.sm, padding: 8 },
+  modalRuleNoteText: { ...Typography.caption, color: Colors.accent.primary, flex: 1 },
+  modalSectionLabel: { ...Typography.caption, color: Colors.text.muted, fontWeight: '700', letterSpacing: 0.5 },
 
   // Done
   doneContent: { alignItems: 'center', gap: 20 },

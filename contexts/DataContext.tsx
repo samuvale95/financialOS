@@ -16,21 +16,28 @@ import {
   loadGoals, saveGoals,
   loadAccounts, saveAccounts,
   loadSubscriptions, saveSubscriptions,
+  loadMerchantRules, saveMerchantRules,
   loadInsightProfile, saveInsightProfile,
   clearAllData,
 } from '../utils/storage';
 import { refreshAssetIfStale } from '../utils/financialApi';
+import { getMerchantKey } from '../utils/categorizer';
 import type { InsightProfile } from '../utils/insightProfile';
 import { EMPTY_PROFILE } from '../utils/insightProfile';
 
 const DEFAULT_BUDGET_LIMITS: StoredBudget[] = [
-  { id: 'b_food', category: 'food', limit: 400, period: 'monthly' },
-  { id: 'b_transport', category: 'transport', limit: 150, period: 'monthly' },
+  { id: 'b_groceries', category: 'groceries', limit: 300, period: 'monthly' },
+  { id: 'b_restaurants', category: 'restaurants', limit: 120, period: 'monthly' },
+  { id: 'b_fuel', category: 'fuel', limit: 80, period: 'monthly' },
+  { id: 'b_public_transport', category: 'public_transport', limit: 60, period: 'monthly' },
   { id: 'b_shopping', category: 'shopping', limit: 200, period: 'monthly' },
   { id: 'b_entertainment', category: 'entertainment', limit: 80, period: 'monthly' },
-  { id: 'b_health', category: 'health', limit: 100, period: 'monthly' },
+  { id: 'b_sports', category: 'sports', limit: 60, period: 'monthly' },
+  { id: 'b_health', category: 'health', limit: 80, period: 'monthly' },
+  { id: 'b_pharmacy', category: 'pharmacy', limit: 40, period: 'monthly' },
   { id: 'b_subscriptions', category: 'subscriptions', limit: 50, period: 'monthly' },
   { id: 'b_utilities', category: 'utilities', limit: 250, period: 'monthly' },
+  { id: 'b_insurance', category: 'insurance', limit: 80, period: 'monthly' },
   { id: 'b_education', category: 'education', limit: 100, period: 'monthly' },
 ];
 
@@ -127,12 +134,14 @@ interface AppData {
   addGoal: (g: Omit<Goal, 'id'>) => void;
   updateGoal: (id: string, updates: Partial<Goal>) => void;
   deleteGoal: (id: string) => void;
-  addAccount: (a: Omit<BankAccount, 'id'>) => void;
+  addAccount: (a: Omit<BankAccount, 'id'>, presetId?: string) => void;
   updateAccount: (id: string, updates: Partial<BankAccount>) => void;
   deleteAccount: (id: string) => void;
   addSubscription: (s: Omit<Subscription, 'id'>) => void;
   updateSubscription: (id: string, updates: Partial<Subscription>) => void;
   deleteSubscription: (id: string) => void;
+  merchantRules: Record<string, CategoryId>;
+  setMerchantRule: (merchantKey: string, category: CategoryId) => void;
   refreshAssetPrices: () => Promise<void>;
   answerQuestion: (questionId: string, tag: string) => void;
   dismissQuestion: (questionId: string) => void;
@@ -148,6 +157,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
   const [goals, setGoals] = useState<Goal[]>([]);
   const [accounts, setAccounts] = useState<BankAccount[]>([]);
   const [subscriptions, setSubscriptions] = useState<Subscription[]>([]);
+  const [merchantRules, setMerchantRulesState] = useState<Record<string, CategoryId>>({});
   const [insightProfile, setInsightProfile] = useState<InsightProfile>(EMPTY_PROFILE);
   const [isLoading, setIsLoading] = useState(true);
 
@@ -159,8 +169,9 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       loadGoals(),
       loadAccounts(),
       loadSubscriptions(),
+      loadMerchantRules(),
       loadInsightProfile(),
-    ]).then(([txs, buds, ass, gls, accs, subs, profile]) => {
+    ]).then(([txs, buds, ass, gls, accs, subs, rules, profile]) => {
       setTransactions(txs);
       // Deduplicate assets by id in case of corrupted storage
       const seenAssets = new Set<string>();
@@ -173,6 +184,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       setGoals(gls);
       setAccounts(accs);
       setSubscriptions(subs);
+      setMerchantRulesState(rules as Record<string, CategoryId>);
       setInsightProfile(profile);
       if (buds.length > 0) {
         setStoredBudgets(buds);
@@ -228,17 +240,22 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       const existingKeys = new Set(prev.map((t) => `${t.date}|${t.amount}|${t.description}`));
       const newOnes = ts
         .filter((t) => !existingKeys.has(`${t.date}|${t.amount}|${t.description}`))
-        .map((t) => ({
-          ...t,
-          id: `t_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-        }));
+        .map((t) => {
+          const key = getMerchantKey(t);
+          const ruleCategory = merchantRules[key];
+          return {
+            ...t,
+            category: ruleCategory ?? t.category,
+            id: `t_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+          };
+        });
       added = newOnes.length;
       const next = [...newOnes, ...prev].sort((a, b) => b.date.localeCompare(a.date));
       saveTransactions(next);
       return next;
     });
     return added;
-  }, []);
+  }, [merchantRules]);
 
   const setBudgetLimit = useCallback((category: CategoryId, limit: number) => {
     setStoredBudgets((prev) => {
@@ -315,6 +332,24 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     });
   }, []);
 
+  const setMerchantRule = useCallback((merchantKey: string, category: CategoryId) => {
+    setMerchantRulesState((prev) => {
+      const next = { ...prev, [merchantKey]: category };
+      saveMerchantRules(next);
+      return next;
+    });
+    // Re-categorize all existing transactions from this merchant
+    setTransactions((prev) => {
+      const updated = prev.map((tx) =>
+        getMerchantKey(tx) === merchantKey ? { ...tx, category } : tx
+      );
+      if (updated.some((tx, i) => tx.category !== prev[i].category)) {
+        saveTransactions(updated);
+      }
+      return updated;
+    });
+  }, []);
+
   const refreshAssetPrices = useCallback(async () => {
     const current = assets;
     await Promise.all(
@@ -327,9 +362,9 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     );
   }, [assets, updateAsset]);
 
-  const addAccount = useCallback((a: Omit<BankAccount, 'id'>) => {
+  const addAccount = useCallback((a: Omit<BankAccount, 'id'>, presetId?: string) => {
     setAccounts((prev) => {
-      const next = [...prev, { ...a, id: `acc_${Date.now()}` }];
+      const next = [...prev, { ...a, id: presetId ?? `acc_${Date.now()}_${Math.random().toString(36).slice(2, 6)}` }];
       saveAccounts(next);
       return next;
     });
@@ -387,6 +422,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     setGoals([]);
     setAccounts([]);
     setSubscriptions([]);
+    setMerchantRulesState({});
     setInsightProfile(EMPTY_PROFILE);
   }, []);
 
@@ -417,6 +453,8 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
         addSubscription,
         updateSubscription,
         deleteSubscription,
+        merchantRules,
+        setMerchantRule,
         refreshAssetPrices,
         answerQuestion,
         dismissQuestion,
