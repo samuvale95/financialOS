@@ -1,5 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import * as SecureStore from 'expo-secure-store';
+import type { FiscalProfile } from '../types';
+import { loadFiscalProfile, saveFiscalProfile } from '../utils/storage';
 
 const STORAGE_KEY = 'financialOS_settings';
 
@@ -37,6 +39,8 @@ interface SettingsContextValue {
     key: K,
     value: AppSettings[S][K]
   ) => void;
+  fiscalProfile: FiscalProfile;
+  setFiscalProfile: (p: FiscalProfile) => void;
 }
 
 const SettingsContext = createContext<SettingsContextValue | null>(null);
@@ -66,9 +70,14 @@ async function saveSettings(s: AppSettings): Promise<void> {
 
 export function SettingsProvider({ children }: { children: React.ReactNode }) {
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
+  const [fiscalProfile, setFiscalProfileState] = useState<FiscalProfile>({ type: 'dipendente' });
 
   useEffect(() => {
     loadSettings().then(setSettings);
+  }, []);
+
+  useEffect(() => {
+    loadFiscalProfile().then(setFiscalProfileState);
   }, []);
 
   const updateSetting = useCallback(
@@ -89,8 +98,13 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
     []
   );
 
+  const setFiscalProfile = useCallback((p: FiscalProfile) => {
+    setFiscalProfileState(p);
+    saveFiscalProfile(p);
+  }, []);
+
   return (
-    <SettingsContext.Provider value={{ settings, updateSetting }}>
+    <SettingsContext.Provider value={{ settings, updateSetting, fiscalProfile, setFiscalProfile }}>
       {children}
     </SettingsContext.Provider>
   );

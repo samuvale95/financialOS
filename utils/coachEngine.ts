@@ -1,5 +1,7 @@
 import type { SpendingAnalysis, CategoryAnalysis } from './spendingAnalyzer';
 import type { InsightProfile } from './insightProfile';
+import type { FiscalProfile, Transaction } from '../types';
+import { calculateEstimated730Refund, calculateForfettarioNetto } from './taxCalculator';
 
 export interface PersistentInsight {
   id: string;
@@ -624,4 +626,74 @@ export function generateCoachQuestions(
   }
 
   return questions.sort((a, b) => b.priority - a.priority);
+}
+
+// ── Tax insights ──────────────────────────────────────────────────────────────
+
+export function generateTaxInsights(
+  profile: FiscalProfile,
+  transactions: Transaction[],
+): PersistentInsight[] {
+  const insights: PersistentInsight[] = [];
+  const currentYear = new Date().getFullYear().toString();
+
+  if (
+    profile.type === 'forfettario' &&
+    profile.coefficienteRedditivita &&
+    profile.aliquotaSostitutiva &&
+    profile.gestioneSeparata
+  ) {
+    const ytdIncome = transactions
+      .filter((t) => t.amount > 0 && t.category !== 'transfer' && t.date.startsWith(currentYear))
+      .reduce((s, t) => s + t.amount, 0);
+    const result = calculateForfettarioNetto(ytdIncome, profile);
+
+    if (result.thresholdResidual < 25_000) {
+      insights.push({
+        id: 'tax_forfettario_threshold',
+        icon: 'warning',
+        iconColor: result.thresholdResidual < 15_000 ? '#FF6B6B' : '#FFB347',
+        title: `Residuo soglia: €${result.thresholdResidual.toFixed(0)}`,
+        body: `Hai fatturato €${ytdIncome.toFixed(0)} quest'anno. Superare 85.000€ comporta l'uscita dal regime forfettario.`,
+        trend: result.thresholdResidual < 15_000 ? 'negative' : 'neutral',
+      });
+    }
+
+    if (result.recommendedSetAside > 0) {
+      insights.push({
+        id: 'tax_forfettario_setaside',
+        icon: 'wallet',
+        iconColor: '#6C63FF',
+        title: `Accantona €${result.recommendedSetAside.toFixed(0)}/mese`,
+        body: `Con un imponibile stimato di €${result.imponibile.toFixed(0)}, accantonare €${result.recommendedSetAside.toFixed(0)}/mese copre imposte e contributi INPS (totale ~€${result.totalTax.toFixed(0)}).`,
+        trend: 'neutral',
+      });
+    }
+  }
+
+  if (profile.type === 'dipendente') {
+    const result = calculateEstimated730Refund(transactions);
+    if (result.estimatedRefund > 0) {
+      insights.push({
+        id: 'tax_730_refund',
+        icon: 'receipt',
+        iconColor: '#00D68F',
+        title: `Rimborso 730 stimato: €${result.estimatedRefund.toFixed(0)}`,
+        body: `Spese mediche detraibili: €${result.deductibleMedical.toFixed(0)}. Istruzione: €${result.educationExpenses.toFixed(0)}. Detrazione 19% = €${result.estimatedRefund.toFixed(0)}.`,
+        trend: 'positive',
+      });
+    }
+    if (result.missingReceiptsCount > 0) {
+      insights.push({
+        id: 'tax_missing_receipts',
+        icon: 'camera',
+        iconColor: '#FFB347',
+        title: `${result.missingReceiptsCount} scontrini fiscali mancanti`,
+        body: `Hai spese mediche/farmacia senza foto dello scontrino allegata. Fotografale per avere prova in caso di controllo per il 730.`,
+        trend: 'negative',
+      });
+    }
+  }
+
+  return insights;
 }

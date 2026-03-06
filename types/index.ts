@@ -18,6 +18,9 @@ export interface Transaction {
   isTransfer?: boolean;
   splits?: TransactionSplit[];
   tags?: string[];
+  isTaxRelevant?: boolean;
+  taxCategory?: 'medical' | 'pharmacy' | 'home_renovation' | 'education' | 'business_expense';
+  attachmentUri?: string;
 }
 
 export interface Budget {
@@ -119,6 +122,17 @@ export interface LifestyleProfile {
   travelFrequency: TravelFrequency;
   diningOutFrequency: DiningFrequency;
   hobbies: string[]; // 'gaming' | 'music' | 'cinema' | 'reading' | 'photography' | 'art' | 'other'
+}
+
+// ── Fiscal profile ────────────────────────────────────────────────────────────
+
+export type FiscalType = 'dipendente' | 'forfettario' | 'altro';
+
+export interface FiscalProfile {
+  type: FiscalType;
+  coefficienteRedditivita?: number;  // es. 0.67
+  aliquotaSostitutiva?: number;       // 0.05 o 0.15
+  gestioneSeparata?: number;          // es. 0.2607
 }
 
 // ── Onboarding enums ──────────────────────────────────────────────────────────

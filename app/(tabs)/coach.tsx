@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
 import {
   ScrollView, View, Text, StyleSheet,
   TouchableOpacity,
@@ -6,14 +6,232 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
+import Svg, { Polyline, Rect, Line, Text as SvgText } from 'react-native-svg';
 import { Colors, Typography, Radius } from '../../constants/theme';
 import { useData } from '../../contexts/DataContext';
-import { analyzeSpending, getBudgetForecast } from '../../utils/spendingAnalyzer';
-import type { BudgetForecast } from '../../utils/spendingAnalyzer';
-import { generateCoachQuestions, generatePersistentInsights } from '../../utils/coachEngine';
+import { analyzeSpending, getBudgetForecast, analyzeHistory } from '../../utils/spendingAnalyzer';
+import type { BudgetForecast, MonthlySnapshot } from '../../utils/spendingAnalyzer';
+import { generateCoachQuestions, generatePersistentInsights, generateTaxInsights } from '../../utils/coachEngine';
 import type { PersistentInsight } from '../../utils/coachEngine';
 import type { CategoryAnalysis } from '../../utils/spendingAnalyzer';
 import type { CoachQuestion, CoachRecommendation } from '../../utils/coachEngine';
+import { useSettings } from '../../contexts/SettingsContext';
+
+// ── History Charts ────────────────────────────────────────────────────────────
+
+const CHART_W = 280;
+
+function TrendLineChart({ snapshots }: { snapshots: MonthlySnapshot[] }) {
+  const maxVal = Math.max(...snapshots.map((s) => s.totalExpenses), 1);
+  const H = 80;
+  const padL = 36;
+  const padB = 20;
+  const padT = 8;
+  const innerW = CHART_W - padL - 8;
+  const innerH = H - padT - padB;
+
+  const pts = snapshots.map((s, i) => {
+    const x = padL + (i / Math.max(snapshots.length - 1, 1)) * innerW;
+    const y = padT + (1 - s.totalExpenses / maxVal) * innerH;
+    return `${x},${y}`;
+  }).join(' ');
+
+  const gridLines = [0, 0.5, 1];
+
+  const abbrevMonth = (ym: string) => {
+    const months = ['Gen', 'Feb', 'Mar', 'Apr', 'Mag', 'Giu', 'Lug', 'Ago', 'Set', 'Ott', 'Nov', 'Dic'];
+    const m = parseInt(ym.split('-')[1], 10) - 1;
+    return months[m] ?? '';
+  };
+
+  return (
+    <Svg width={CHART_W} height={H}>
+      {gridLines.map((ratio, i) => {
+        const y = padT + ratio * innerH;
+        const val = maxVal * (1 - ratio);
+        return (
+          <React.Fragment key={i}>
+            <Line x1={padL} y1={y} x2={CHART_W - 8} y2={y} stroke={Colors.border.default} strokeWidth={0.5} />
+            <SvgText x={padL - 4} y={y + 3} fontSize={8} fill={Colors.text.muted} textAnchor="end">
+              {val >= 1000 ? `${(val / 1000).toFixed(1)}k` : val.toFixed(0)}
+            </SvgText>
+          </React.Fragment>
+        );
+      })}
+      <Polyline points={pts} fill="none" stroke={Colors.accent.primary} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
+      {snapshots.map((s, i) => {
+        const x = padL + (i / Math.max(snapshots.length - 1, 1)) * innerW;
+        const y = padT + (1 - s.totalExpenses / maxVal) * innerH;
+        return (
+          <React.Fragment key={i}>
+            <Rect x={x - 2} y={y - 2} width={4} height={4} rx={2} fill={Colors.accent.primary} />
+            <SvgText x={x} y={H - 4} fontSize={8} fill={Colors.text.muted} textAnchor="middle">
+              {abbrevMonth(s.month)}
+            </SvgText>
+          </React.Fragment>
+        );
+      })}
+    </Svg>
+  );
+}
+
+function IncomeExpenseBarChart({ snapshots }: { snapshots: MonthlySnapshot[] }) {
+  const allVals = snapshots.flatMap((s) => [s.totalExpenses, s.monthIncome]);
+  const maxVal = Math.max(...allVals, 1);
+  const H = 90;
+  const padL = 36;
+  const padB = 20;
+  const padT = 8;
+  const innerW = CHART_W - padL - 8;
+  const innerH = H - padT - padB;
+  const slotW = innerW / snapshots.length;
+  const barW = Math.max(4, slotW * 0.35);
+
+  const abbrevMonth = (ym: string) => {
+    const months = ['Gen', 'Feb', 'Mar', 'Apr', 'Mag', 'Giu', 'Lug', 'Ago', 'Set', 'Ott', 'Nov', 'Dic'];
+    const m = parseInt(ym.split('-')[1], 10) - 1;
+    return months[m] ?? '';
+  };
+
+  return (
+    <Svg width={CHART_W} height={H}>
+      {[0, 0.5, 1].map((ratio, i) => {
+        const y = padT + ratio * innerH;
+        const val = maxVal * (1 - ratio);
+        return (
+          <React.Fragment key={i}>
+            <Line x1={padL} y1={y} x2={CHART_W - 8} y2={y} stroke={Colors.border.default} strokeWidth={0.5} />
+            <SvgText x={padL - 4} y={y + 3} fontSize={8} fill={Colors.text.muted} textAnchor="end">
+              {val >= 1000 ? `${(val / 1000).toFixed(1)}k` : val.toFixed(0)}
+            </SvgText>
+          </React.Fragment>
+        );
+      })}
+      {snapshots.map((s, i) => {
+        const cx = padL + i * slotW + slotW / 2;
+        const incomeH = (s.monthIncome / maxVal) * innerH;
+        const expH = (s.totalExpenses / maxVal) * innerH;
+        return (
+          <React.Fragment key={i}>
+            <Rect
+              x={cx - barW - 1} y={padT + innerH - incomeH}
+              width={barW} height={Math.max(incomeH, 0.5)}
+              rx={1.5} fill={Colors.semantic.success + 'CC'}
+            />
+            <Rect
+              x={cx + 1} y={padT + innerH - expH}
+              width={barW} height={Math.max(expH, 0.5)}
+              rx={1.5} fill={Colors.semantic.danger + 'CC'}
+            />
+            <SvgText x={cx} y={H - 4} fontSize={8} fill={Colors.text.muted} textAnchor="middle">
+              {abbrevMonth(s.month)}
+            </SvgText>
+          </React.Fragment>
+        );
+      })}
+    </Svg>
+  );
+}
+
+function SavingsRateSparkline({ snapshots }: { snapshots: MonthlySnapshot[] }) {
+  const H = 56;
+  const padL = 28;
+  const padB = 16;
+  const padT = 6;
+  const innerW = CHART_W - padL - 8;
+  const innerH = H - padT - padB;
+  const maxRate = Math.max(...snapshots.map((s) => s.savingsRate), 30);
+
+  const currentRate = snapshots[snapshots.length - 1]?.savingsRate ?? 0;
+  const lineColor =
+    currentRate >= 20 ? Colors.semantic.success :
+    currentRate >= 10 ? Colors.semantic.warning :
+    Colors.semantic.danger;
+
+  const pts = snapshots.map((s, i) => {
+    const x = padL + (i / Math.max(snapshots.length - 1, 1)) * innerW;
+    const y = padT + (1 - Math.min(s.savingsRate, maxRate) / maxRate) * innerH;
+    return `${x},${y}`;
+  }).join(' ');
+
+  const targetY = padT + (1 - Math.min(20, maxRate) / maxRate) * innerH;
+
+  return (
+    <Svg width={CHART_W} height={H}>
+      <Line x1={padL} y1={targetY} x2={CHART_W - 8} y2={targetY}
+        stroke={Colors.semantic.success} strokeWidth={0.8} strokeDasharray="4,3" />
+      <SvgText x={padL - 4} y={targetY + 3} fontSize={8} fill={Colors.semantic.success} textAnchor="end">
+        20%
+      </SvgText>
+      <Polyline points={pts} fill="none" stroke={lineColor} strokeWidth={2}
+        strokeLinejoin="round" strokeLinecap="round" />
+      {snapshots.map((s, i) => {
+        const x = padL + (i / Math.max(snapshots.length - 1, 1)) * innerW;
+        const y = padT + (1 - Math.min(s.savingsRate, maxRate) / maxRate) * innerH;
+        return (
+          <Rect key={i} x={x - 2} y={y - 2} width={4} height={4} rx={2} fill={lineColor} />
+        );
+      })}
+    </Svg>
+  );
+}
+
+function HistoryChartsSection({ snapshots }: { snapshots: MonthlySnapshot[] }) {
+  const withData = snapshots.filter((s) => s.totalExpenses > 0 || s.monthIncome > 0);
+  if (withData.length < 2) return null;
+
+  const currentRate = withData[withData.length - 1]?.savingsRate ?? 0;
+  const rateColor =
+    currentRate >= 20 ? Colors.semantic.success :
+    currentRate >= 10 ? Colors.semantic.warning :
+    Colors.semantic.danger;
+
+  return (
+    <View style={{ gap: 12 }}>
+      <Text style={s.sectionTitlePlain}>Andamento 6 mesi</Text>
+
+      {/* Trend spese */}
+      <View style={s.chartCard}>
+        <View style={s.chartHeader}>
+          <Ionicons name="trending-up" size={14} color={Colors.accent.primary} />
+          <Text style={s.chartTitle}>Uscite mensili</Text>
+        </View>
+        <TrendLineChart snapshots={withData} />
+      </View>
+
+      {/* Entrate vs Uscite */}
+      <View style={s.chartCard}>
+        <View style={s.chartHeader}>
+          <Ionicons name="bar-chart" size={14} color={Colors.accent.primary} />
+          <Text style={s.chartTitle}>Entrate vs Uscite</Text>
+        </View>
+        <IncomeExpenseBarChart snapshots={withData} />
+        <View style={s.chartLegend}>
+          <View style={s.legendItem}>
+            <View style={[s.legendDot, { backgroundColor: Colors.semantic.success }]} />
+            <Text style={s.legendLabel}>Entrate</Text>
+          </View>
+          <View style={s.legendItem}>
+            <View style={[s.legendDot, { backgroundColor: Colors.semantic.danger }]} />
+            <Text style={s.legendLabel}>Uscite</Text>
+          </View>
+        </View>
+      </View>
+
+      {/* Tasso di risparmio */}
+      <View style={s.chartCard}>
+        <View style={s.chartHeader}>
+          <Ionicons name="leaf" size={14} color={rateColor} />
+          <Text style={s.chartTitle}>Tasso di risparmio</Text>
+          <Text style={[s.chartTitle, { color: rateColor, marginLeft: 'auto' }]}>
+            {currentRate.toFixed(0)}%
+          </Text>
+        </View>
+        <SavingsRateSparkline snapshots={withData} />
+      </View>
+    </View>
+  );
+}
 
 // ── Score ring ────────────────────────────────────────────────────────────────
 
@@ -414,14 +632,80 @@ function UnclassifiedCard({ count }: { count: number }) {
   );
 }
 
+// ── Month Selector ────────────────────────────────────────────────────────────
+
+function MonthSelector({
+  months,
+  selected,
+  onChange,
+}: {
+  months: string[];
+  selected: string;
+  onChange: (m: string) => void;
+}) {
+  const idx = months.indexOf(selected);
+  const label = new Date(selected + '-01').toLocaleDateString('it-IT', {
+    month: 'long', year: 'numeric',
+  });
+  const isNewest = idx === months.length - 1;
+  const isOldest = idx === 0;
+
+  return (
+    <View style={s.monthSelector}>
+      <TouchableOpacity
+        style={[s.monthArrow, isOldest && s.monthArrowDisabled]}
+        onPress={() => !isOldest && onChange(months[idx - 1])}
+        activeOpacity={0.7}
+      >
+        <Ionicons name="chevron-back" size={20} color={isOldest ? Colors.text.muted : Colors.text.primary} />
+      </TouchableOpacity>
+
+      <View style={s.monthLabelWrap}>
+        <Text style={s.monthSelectorLabel}>{label}</Text>
+        {isNewest && (
+          <View style={s.monthCurrentBadge}>
+            <Text style={s.monthCurrentText}>Più recente</Text>
+          </View>
+        )}
+      </View>
+
+      <TouchableOpacity
+        style={[s.monthArrow, isNewest && s.monthArrowDisabled]}
+        onPress={() => !isNewest && onChange(months[idx + 1])}
+        activeOpacity={0.7}
+      >
+        <Ionicons name="chevron-forward" size={20} color={isNewest ? Colors.text.muted : Colors.text.primary} />
+      </TouchableOpacity>
+    </View>
+  );
+}
+
 // ── Main screen ───────────────────────────────────────────────────────────────
 
 export default function CoachScreen() {
   const { transactions, budgets, insightProfile, answerQuestion, dismissQuestion } = useData();
+  const { fiscalProfile } = useSettings();
+
+  const availableMonths = useMemo(() => {
+    return [...new Set(
+      transactions
+        .filter(t => t.category !== 'transfer')
+        .map(t => t.date.slice(0, 7))
+    )].sort();
+  }, [transactions]);
+
+  const latestMonth = availableMonths.at(-1) ?? new Date().toISOString().slice(0, 7);
+  const [selectedMonth, setSelectedMonth] = useState<string>(latestMonth);
+
+  useEffect(() => {
+    if (availableMonths.length > 0 && !availableMonths.includes(selectedMonth)) {
+      setSelectedMonth(availableMonths.at(-1)!);
+    }
+  }, [availableMonths]);
 
   const analysis = useMemo(
-    () => analyzeSpending(transactions, budgets),
-    [transactions, budgets],
+    () => analyzeSpending(transactions, budgets, selectedMonth),
+    [transactions, budgets, selectedMonth],
   );
 
   const questions = useMemo(
@@ -431,6 +715,11 @@ export default function CoachScreen() {
 
   const budgetForecasts = useMemo(() => getBudgetForecast(budgets, transactions), [budgets, transactions]);
   const persistentInsights = useMemo(() => generatePersistentInsights(analysis), [analysis]);
+  const taxInsights = useMemo(
+    () => generateTaxInsights(fiscalProfile, transactions),
+    [fiscalProfile, transactions],
+  );
+  const history = useMemo(() => analyzeHistory(transactions, budgets, 6), [transactions, budgets]);
   const unclassifiedCount = useMemo(
     () => transactions.filter((t) => t.category === 'other' && t.amount < 0).length,
     [transactions]
@@ -542,6 +831,15 @@ export default function CoachScreen() {
 
         {hasData && (
           <>
+            {/* Month selector */}
+            {availableMonths.length > 1 && (
+              <MonthSelector
+                months={availableMonths}
+                selected={selectedMonth}
+                onChange={setSelectedMonth}
+              />
+            )}
+
             {/* Active question or recommendation */}
             {activeQuestion && !activeRec && (
               <View>
@@ -582,7 +880,8 @@ export default function CoachScreen() {
 
             <UnclassifiedCard count={unclassifiedCount} />
             <BudgetForecastCard forecasts={budgetForecasts} />
-            <PersistentInsightsPanel insights={persistentInsights} />
+            <PersistentInsightsPanel insights={[...persistentInsights, ...taxInsights]} />
+            <HistoryChartsSection snapshots={history} />
 
             {/* Summary stats bar */}
             <View style={s.statsBar}>
@@ -984,6 +1283,47 @@ const s = StyleSheet.create({
   tipTitle: { ...Typography.caption, color: Colors.text.primary, fontWeight: '700' },
   tipText: { ...Typography.micro, color: Colors.text.secondary, lineHeight: 16 },
 
+  // Chart cards
+  chartCard: {
+    backgroundColor: Colors.bg.card,
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+    borderColor: Colors.border.default,
+    padding: 14,
+    gap: 10,
+    alignItems: 'center',
+  },
+  chartHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    alignSelf: 'stretch',
+  },
+  chartTitle: {
+    ...Typography.caption,
+    color: Colors.text.secondary,
+    fontWeight: '600',
+  },
+  chartLegend: {
+    flexDirection: 'row',
+    gap: 16,
+    alignSelf: 'flex-start',
+  },
+  legendItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  },
+  legendDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  legendLabel: {
+    ...Typography.micro,
+    color: Colors.text.secondary,
+  },
+
   // Unclassified card
   unclassCard: {
     flexDirection: 'row',
@@ -1005,4 +1345,26 @@ const s = StyleSheet.create({
     paddingVertical: 8,
   },
   unclassBtnText: { ...Typography.caption, color: '#000', fontWeight: '700' },
+
+  // Month Selector
+  monthSelector: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    backgroundColor: Colors.bg.card, borderRadius: Radius.lg,
+    borderWidth: 1, borderColor: Colors.border.default,
+    paddingVertical: 10, paddingHorizontal: 12,
+  },
+  monthArrow: {
+    width: 36, height: 36, borderRadius: 18,
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: Colors.bg.elevated,
+  },
+  monthArrowDisabled: { opacity: 0.3 },
+  monthLabelWrap: { alignItems: 'center', gap: 4 },
+  monthSelectorLabel: { ...Typography.bodyMedium, color: Colors.text.primary, fontWeight: '700', textTransform: 'capitalize' },
+  monthCurrentBadge: {
+    backgroundColor: Colors.accent.glow, borderRadius: Radius.full,
+    paddingHorizontal: 8, paddingVertical: 2,
+    borderWidth: 1, borderColor: Colors.border.accent,
+  },
+  monthCurrentText: { ...Typography.micro, color: Colors.accent.primary, fontWeight: '600' },
 });

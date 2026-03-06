@@ -102,8 +102,6 @@ interface WizardState {
   merchantOverrides: Record<string, CategoryId>;
   // Step 2: Stile di vita
   lifestyleProfile: LifestyleProfile;
-  // Emergency fund
-  emergencyFundMonths: 3 | 6;
 }
 
 const INIT_STATE: WizardState = {
@@ -112,7 +110,7 @@ const INIT_STATE: WizardState = {
   region: null, housingType: null, housingCost: '',
   workType: null, workSector: null, incomeStability: null,
   incomeSources: [], accounts: [], hasCrypto: null, cryptoAssets: [], hasInvestments: null, assets: [],
-  mainGoal: null, effortLevel: null, importedFiles: [], budgetEdits: {}, merchantOverrides: {}, emergencyFundMonths: 3,
+  mainGoal: null, effortLevel: null, importedFiles: [], budgetEdits: {}, merchantOverrides: {},
   lifestyleProfile: {
     sportFrequency: 'occasional',
     travelFrequency: 'once_year',
@@ -993,22 +991,6 @@ export default function OnboardingScreen() {
       const mergedForSave = mergeImportedFiles(state.importedFiles, accountIds);
       if (mergedForSave.length > 0) addTransactions(mergedForSave);
 
-      // Create emergency fund goal if selected
-      if (state.mainGoal === 'emergenza' && income > 0) {
-        const targetAmount = income * state.emergencyFundMonths;
-        const accountsTotal = state.accounts.reduce((s, a) => s + a.balance, 0);
-        const targetDate = new Date();
-        targetDate.setFullYear(targetDate.getFullYear() + 2);
-        addGoal({
-          title: 'Fondo di Emergenza',
-          emoji: '🛡️',
-          targetAmount,
-          savedAmount: Math.min(accountsTotal, targetAmount),
-          targetDate: targetDate.toISOString().slice(0, 10),
-          color: '#FFB347',
-        });
-      }
-
       await saveOnboardingData({
         completed: true,
         completedAt: new Date().toISOString(),
@@ -1583,40 +1565,6 @@ export default function OnboardingScreen() {
               </View>
             )}
 
-            {state.mainGoal === 'emergenza' && income > 0 && (
-              <View style={s.emergencyCard}>
-                <View style={s.emergencyHeader}>
-                  <Text style={s.emergencyEmoji}>🛡️</Text>
-                  <View style={{ flex: 1 }}>
-                    <Text style={s.emergencyTitle}>Fondo di Emergenza</Text>
-                    <Text style={s.emergencySub}>Quanti mesi di spese vuoi coprire?</Text>
-                  </View>
-                </View>
-                <View style={s.emergencyToggle}>
-                  {([3, 6] as const).map((m) => (
-                    <TouchableOpacity
-                      key={m}
-                      style={[s.emergencyPill, state.emergencyFundMonths === m && s.emergencyPillActive]}
-                      activeOpacity={0.7}
-                      onPress={() => set({ emergencyFundMonths: m })}
-                    >
-                      <Text style={[s.emergencyPillText, state.emergencyFundMonths === m && s.emergencyPillTextActive]}>
-                        {m} mesi {m === 3 ? '(starter)' : '(completo)'}
-                      </Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-                <View style={s.emergencyTarget}>
-                  <Text style={s.emergencyTargetLabel}>Obiettivo</Text>
-                  <Text style={s.emergencyTargetAmount}>{fmtEur(income * state.emergencyFundMonths)}</Text>
-                  {state.accounts.length > 0 && (
-                    <Text style={s.emergencyTargetSub}>
-                      Saldo attuale: {fmtEur(state.accounts.reduce((sum, a) => sum + a.balance, 0))} · punto di partenza
-                    </Text>
-                  )}
-                </View>
-              </View>
-            )}
           </>
         );
 

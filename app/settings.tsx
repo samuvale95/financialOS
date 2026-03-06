@@ -17,7 +17,7 @@ import { useSettings } from '../contexts/SettingsContext';
 import { useData } from '../contexts/DataContext';
 import { ITALIAN_BANKS } from '../constants/italianBanks';
 import type { ItalianBank } from '../constants/italianBanks';
-import type { BankAccount } from '../types';
+import type { BankAccount, FiscalType } from '../types';
 
 // ── Shared ──────────────────────────────────────────────────────────────────
 
@@ -262,6 +262,108 @@ function AccountRow({ account, onUpdate, onDelete }: AccountRowProps) {
   );
 }
 
+// ── FiscoProfileSection ──────────────────────────────────────────────────────
+
+function FiscoProfileSection() {
+  const { fiscalProfile, setFiscalProfile } = useSettings();
+  const [coeff, setCoeff] = useState(
+    fiscalProfile.coefficienteRedditivita != null
+      ? String(fiscalProfile.coefficienteRedditivita)
+      : ''
+  );
+  const [aliquota, setAliquota] = useState(
+    fiscalProfile.aliquotaSostitutiva != null
+      ? String(fiscalProfile.aliquotaSostitutiva)
+      : ''
+  );
+  const [inps, setInps] = useState(
+    fiscalProfile.gestioneSeparata != null
+      ? String(fiscalProfile.gestioneSeparata)
+      : ''
+  );
+
+  const selectType = (t: FiscalType) =>
+    setFiscalProfile({ ...fiscalProfile, type: t });
+
+  const saveParams = () =>
+    setFiscalProfile({
+      type: 'forfettario',
+      coefficienteRedditivita: parseFloat(coeff.replace(',', '.')) || 0.67,
+      aliquotaSostitutiva: parseFloat(aliquota.replace(',', '.')) || 0.15,
+      gestioneSeparata: parseFloat(inps.replace(',', '.')) || 0.2607,
+    });
+
+  const types: { key: FiscalType; label: string }[] = [
+    { key: 'dipendente', label: 'Dipendente (730)' },
+    { key: 'forfettario', label: 'Forfettario' },
+    { key: 'altro', label: 'Altro' },
+  ];
+
+  return (
+    <Section title="PROFILO FISCALE">
+      <View style={styles.fiscoPicker}>
+        {types.map((t, i) => (
+          <TouchableOpacity
+            key={t.key}
+            style={[
+              styles.fiscoTypeBtn,
+              fiscalProfile.type === t.key && styles.fiscoTypeBtnActive,
+              i < types.length - 1 && { marginRight: 8 },
+            ]}
+            onPress={() => selectType(t.key)}
+            activeOpacity={0.7}
+          >
+            <Text
+              style={[
+                styles.fiscoTypeBtnText,
+                fiscalProfile.type === t.key && styles.fiscoTypeBtnTextActive,
+              ]}
+            >
+              {t.label}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+      {fiscalProfile.type === 'forfettario' && (
+        <View style={styles.fiscoParams}>
+          <View style={styles.separator} />
+          <TextInput
+            style={styles.textInput}
+            placeholder="Coefficiente redditività (es. 0.67)"
+            placeholderTextColor={Colors.text.muted}
+            value={coeff}
+            onChangeText={setCoeff}
+            keyboardType="decimal-pad"
+          />
+          <TextInput
+            style={styles.textInput}
+            placeholder="Aliquota sostitutiva (es. 0.15)"
+            placeholderTextColor={Colors.text.muted}
+            value={aliquota}
+            onChangeText={setAliquota}
+            keyboardType="decimal-pad"
+          />
+          <TextInput
+            style={styles.textInput}
+            placeholder="Gestione separata INPS (es. 0.2607)"
+            placeholderTextColor={Colors.text.muted}
+            value={inps}
+            onChangeText={setInps}
+            keyboardType="decimal-pad"
+          />
+          <TouchableOpacity
+            style={styles.accentBtn}
+            onPress={saveParams}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.accentBtnText}>Salva parametri</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+    </Section>
+  );
+}
+
 // ── Main Settings Screen ────────────────────────────────────────────────────
 
 export default function SettingsScreen() {
@@ -289,6 +391,9 @@ export default function SettingsScreen() {
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
       >
+        {/* Profilo fiscale */}
+        <FiscoProfileSection />
+
         {/* Conti bancari */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>CONTI BANCARI</Text>
@@ -656,6 +761,41 @@ const styles = StyleSheet.create({
     ...Typography.caption,
     color: Colors.text.muted,
     marginTop: 2,
+  },
+
+  // Fisco profile
+  fiscoPicker: {
+    flexDirection: 'row',
+    paddingVertical: 14,
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  fiscoTypeBtn: {
+    flex: 1,
+    paddingVertical: 8,
+    paddingHorizontal: 4,
+    borderRadius: Radius.md,
+    backgroundColor: Colors.bg.elevated,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: Colors.border.default,
+  },
+  fiscoTypeBtnActive: {
+    backgroundColor: Colors.accent.primary + '22',
+    borderColor: Colors.accent.primary,
+  },
+  fiscoTypeBtnText: {
+    ...Typography.caption,
+    color: Colors.text.secondary,
+    textAlign: 'center',
+  },
+  fiscoTypeBtnTextActive: {
+    color: Colors.accent.primary,
+    fontWeight: '600',
+  },
+  fiscoParams: {
+    gap: Spacing.sm,
+    paddingBottom: 12,
   },
 
   // Info card

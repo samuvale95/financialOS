@@ -21,7 +21,7 @@ import {
   clearAllData,
 } from '../utils/storage';
 import { refreshAssetIfStale } from '../utils/financialApi';
-import { getMerchantKey } from '../utils/categorizer';
+import { getMerchantKey, getTaxInfo } from '../utils/categorizer';
 import type { InsightProfile } from '../utils/insightProfile';
 import { EMPTY_PROFILE } from '../utils/insightProfile';
 
@@ -243,9 +243,12 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
         .map((t) => {
           const key = getMerchantKey(t);
           const ruleCategory = merchantRules[key];
+          const effectiveCategory = ruleCategory ?? t.category;
+          const taxInfo = getTaxInfo(t.description, effectiveCategory);
           return {
             ...t,
-            category: ruleCategory ?? t.category,
+            category: effectiveCategory,
+            ...taxInfo,
             id: `t_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
           };
         });

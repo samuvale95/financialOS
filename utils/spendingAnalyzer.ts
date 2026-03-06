@@ -2,6 +2,14 @@ import type { Transaction, Budget } from '../types';
 import type { CategoryId } from '../constants/categories';
 import { CATEGORIES } from '../constants/categories';
 
+export interface MonthlySnapshot {
+  month: string;           // YYYY-MM
+  totalExpenses: number;
+  monthIncome: number;
+  savingsRate: number;     // 0–100
+  topCategories: { category: CategoryId; label: string; color: string; icon: string; total: number }[];
+}
+
 export interface BudgetForecast {
   category: CategoryId;
   label: string;
@@ -73,7 +81,7 @@ const EXPENSE_CATEGORY_IDS: CategoryId[] = [
   'shopping', 'entertainment', 'sports',
   'health', 'pharmacy', 'rent', 'home',
   'utilities', 'insurance', 'subscriptions',
-  'travel', 'education', 'other',
+  'travel', 'education', 'beauty', 'pets', 'taxes', 'other',
 ];
 
 // Transfers between own accounts — excluded from all expense metrics
@@ -89,6 +97,12 @@ function getMonthPrefix(monthsAgo = 0): string {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, '0');
   return `${y}-${m}`;
+}
+
+function getPrevMonthStr(month: string): string {
+  const [y, m] = month.split('-').map(Number);
+  const d = new Date(y, m - 2, 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
 }
 
 function isWeekend(dateStr: string): boolean {
@@ -234,12 +248,130 @@ export function getBudgetForecast(budgets: Budget[], transactions: Transaction[]
     .sort((a, b) => b.paceRatio - a.paceRatio);
 }
 
+export function analyzeHistory(
+  transactions: Transaction[],
+  budgets: Budget[],
+  months = 6,
+): MonthlySnapshot[] {
+  const result: MonthlySnapshot[] = [];
+
+  for (let i = months - 1; i >= 0; i--) {
+    const month = getMonthPrefix(i);
+    const monthTx = transactions.filter((t) => t.date.startsWith(month));
+
+    const monthIncome = monthTx
+      .filter((t) => t.amount > 0 && t.category !== TRANSFER_CATEGORY)
+      .reduce((s, t) => s + t.amount, 0);
+
+    const totalExpenses = monthTx
+      .filter(isExpense)
+      .reduce((s, t) => s + Math.abs(t.amount), 0);
+
+    const savingsRate =
+      monthIncome > 0 ? Math.max(0, ((monthIncome - totalExpenses) / monthIncome) * 100) : 0;
+
+    // Top 3 expense categories by total
+    const catTotals = new Map<CategoryId, number>();
+    for (const tx of monthTx) {
+      if (!isExpense(tx)) continue;
+      const cat = tx.category as CategoryId;
+      catTotals.set(cat, (catTotals.get(cat) ?? 0) + Math.abs(tx.amount));
+    }
+    const topCategories = Array.from(catTotals.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([category, total]) => {
+        const cat = CATEGORIES[category];
+        return {
+          category,
+          label: cat?.label ?? category,
+          color: cat?.color ?? '#888',
+          icon: cat?.icon ?? 'help-circle',
+          total,
+        };
+      });
+
+    result.push({ month, totalExpenses, monthIncome, savingsRate, topCategories });
+  }
+
+  return result;
+}
+
+export function analyzeAllHistory(
+  transactions: Transaction[],
+  budgets: Budget[],
+): MonthlySnapshot[] {
+  const months = [
+    ...new Set(
+      transactions
+        .filter((t) => t.category !== 'transfer' || t.amount > 0)
+        .map((t) => t.date.slice(0, 7)),
+    ),
+  ].sort(); // oldest → newest
+
+  return months.map((month) => {
+    const monthTx = transactions.filter((t) => t.date.startsWith(month));
+    const monthIncome = monthTx
+      .filter((t) => t.amount > 0 && t.category !== 'transfer')
+      .reduce((s, t) => s + t.amount, 0);
+    const totalExpenses = monthTx.filter(isExpense).reduce((s, t) => s + Math.abs(t.amount), 0);
+    const savingsRate =
+      monthIncome > 0 ? Math.max(0, ((monthIncome - totalExpenses) / monthIncome) * 100) : 0;
+
+    const catTotals = new Map<CategoryId, number>();
+    for (const tx of monthTx) {
+      if (!isExpense(tx)) continue;
+      catTotals.set(
+        tx.category as CategoryId,
+        (catTotals.get(tx.category as CategoryId) ?? 0) + Math.abs(tx.amount),
+      );
+    }
+    const topCategories = Array.from(catTotals.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([category, total]) => {
+        const cat = CATEGORIES[category];
+        return {
+          category,
+          label: cat?.label ?? category,
+          color: cat?.color ?? '#888',
+          icon: cat?.icon ?? 'help-circle',
+          total,
+        };
+      });
+
+    return { month, totalExpenses, monthIncome, savingsRate, topCategories };
+  });
+}
+
 export function analyzeSpending(
   transactions: Transaction[],
   budgets: Budget[],
+  month?: string,
 ): SpendingAnalysis {
-  const thisMonth = getMonthPrefix(0);
-  const lastMonth = getMonthPrefix(1);
+  let thisMonth: string;
+  let lastMonth: string;
+
+  if (month) {
+    thisMonth = month;
+    lastMonth = getPrevMonthStr(month);
+  } else {
+    const nowMonth = getMonthPrefix(0);
+    const hasCurrentMonth = transactions.some(
+      (t) => t.date.startsWith(nowMonth) && t.category !== 'transfer',
+    );
+    thisMonth =
+      !hasCurrentMonth && transactions.length > 0
+        ? ([
+            ...new Set(
+              transactions.filter((t) => t.category !== 'transfer').map((t) => t.date.slice(0, 7)),
+            ),
+          ]
+            .sort()
+            .at(-1) ?? nowMonth)
+        : nowMonth;
+    lastMonth = getPrevMonthStr(thisMonth);
+  }
 
   const thisMonthTx = transactions.filter((t) => t.date.startsWith(thisMonth));
   const lastMonthTx = transactions.filter((t) => t.date.startsWith(lastMonth));

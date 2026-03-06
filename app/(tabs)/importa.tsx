@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   View,
   Text,
@@ -21,6 +21,7 @@ import { useSettings } from '../../contexts/SettingsContext';
 import { useData } from '../../contexts/DataContext';
 import { parseCSV, type ParseResult } from '../../utils/parsers';
 import { parseExcel } from '../../utils/excelParser';
+import { parsePDF } from '../../utils/pdfParser';
 import type { Transaction } from '../../types';
 
 type ImportPhase = 'idle' | 'picking' | 'parsing' | 'preview' | 'importing' | 'done' | 'error';
@@ -32,13 +33,23 @@ interface PreviewState {
 
 export default function ImportaScreen() {
   const { settings } = useSettings();
-  const { addTransactions, accounts, updateAccount } = useData();
+  const { addTransactions, accounts, updateAccount, transactions, goals, addGoal } = useData();
   const [phase, setPhase] = useState<ImportPhase>('idle');
   const [preview, setPreview] = useState<PreviewState | null>(null);
   const [errorMsg, setErrorMsg] = useState('');
   const [balanceUpdated, setBalanceUpdated] = useState(false);
   const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null);
   const [newBalance, setNewBalance] = useState('');
+  const [emergencyMonths, setEmergencyMonths] = useState<3 | 6>(3);
+  const [emergencyDone, setEmergencyDone] = useState(false);
+
+  const avgMonthlyExp = useMemo(() => {
+    const expTxs = transactions.filter(t => t.amount < 0 && t.category !== 'transfer');
+    const months = new Set(expTxs.map(t => t.date.slice(0, 7)));
+    if (months.size === 0) return 0;
+    const total = expTxs.reduce((s, t) => s + Math.abs(t.amount), 0);
+    return Math.round(total / months.size);
+  }, [transactions]);
 
   const handleCSV = async () => {
     setPhase('picking');
@@ -106,17 +117,26 @@ export default function ImportaScreen() {
   };
 
   const handlePDF = async () => {
+    setPhase('picking');
     try {
-      await DocumentPicker.getDocumentAsync({
+      const picked = await DocumentPicker.getDocumentAsync({
         type: ['application/pdf'],
-        copyToCacheDirectory: false,
+        copyToCacheDirectory: true,
       });
-    } catch {}
-    Alert.alert(
-      'PDF selezionato',
-      'Il parsing PDF è in sviluppo. Per ora usa CSV o Excel per importare le transazioni.',
-      [{ text: 'OK' }]
-    );
+      if (picked.canceled || !picked.assets?.[0]) { setPhase('idle'); return; }
+      setPhase('parsing');
+      const result = await parsePDF(picked.assets[0].uri);
+      if (result.transactions.length === 0) {
+        setErrorMsg('Nessuna transazione trovata nel PDF. Verifica che sia un estratto conto di una banca italiana supportata.');
+        setPhase('error');
+        return;
+      }
+      setPreview({ result });
+      setPhase('preview');
+    } catch (e) {
+      setErrorMsg('Errore durante la lettura del PDF. Assicurati che il file non sia protetto da password.');
+      setPhase('error');
+    }
   };
 
   const handleConfirmImport = async () => {
@@ -139,6 +159,8 @@ export default function ImportaScreen() {
     setBalanceUpdated(false);
     setSelectedAccountId(null);
     setNewBalance('');
+    setEmergencyDone(false);
+    setEmergencyMonths(3);
   };
 
   const handleUpdateBalance = () => {
@@ -323,6 +345,68 @@ export default function ImportaScreen() {
                   activeOpacity={0.8}
                 >
                   <Text style={styles.accentBtnText}>Aggiorna</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          )}
+
+          {!emergencyDone && !goals.some(g => g.title === 'Fondo di Emergenza') && avgMonthlyExp > 0 && (
+            <View style={styles.emergencyCard}>
+              <View style={styles.emergencyCardHeader}>
+                <Text style={styles.emergencyEmoji}>🛡️</Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.emergencyCardTitle}>Fondo di Emergenza</Text>
+                  <Text style={styles.emergencyCardSub}>
+                    Le tue spese medie sono ~€{avgMonthlyExp.toLocaleString('it-IT')}/mese
+                  </Text>
+                </View>
+              </View>
+
+              <View style={styles.emergencyPills}>
+                {([3, 6] as const).map(m => (
+                  <TouchableOpacity
+                    key={m}
+                    style={[styles.emergencyPill, emergencyMonths === m && styles.emergencyPillActive]}
+                    onPress={() => setEmergencyMonths(m)}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={[styles.emergencyPillText, emergencyMonths === m && styles.emergencyPillTextActive]}>
+                      {m} mesi
+                    </Text>
+                    <Text style={[styles.emergencyPillAmount, emergencyMonths === m && styles.emergencyPillTextActive]}>
+                      €{(avgMonthlyExp * m).toLocaleString('it-IT')}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+
+              <View style={styles.emergencyActions}>
+                <TouchableOpacity
+                  style={styles.emergencySkip}
+                  onPress={() => setEmergencyDone(true)}
+                  activeOpacity={0.7}
+                >
+                  <Text style={styles.emergencySkipText}>Non ora</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.emergencyCreate}
+                  onPress={() => {
+                    const target = avgMonthlyExp * emergencyMonths;
+                    const targetDate = new Date();
+                    targetDate.setFullYear(targetDate.getFullYear() + 2);
+                    addGoal({
+                      title: 'Fondo di Emergenza',
+                      emoji: '🛡️',
+                      targetAmount: target,
+                      savedAmount: 0,
+                      targetDate: targetDate.toISOString().slice(0, 10),
+                      color: '#FFB347',
+                    });
+                    setEmergencyDone(true);
+                  }}
+                  activeOpacity={0.8}
+                >
+                  <Text style={styles.emergencyCreateText}>Crea obiettivo</Text>
                 </TouchableOpacity>
               </View>
             </View>
@@ -711,6 +795,41 @@ const styles = StyleSheet.create({
   },
   accentBtnDisabled: { opacity: 0.4 },
   accentBtnText: { ...Typography.bodyMedium, color: '#fff', fontWeight: '600' },
+
+  // Emergency fund card
+  emergencyCard: {
+    backgroundColor: Colors.bg.card,
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+    borderColor: '#FFB347' + '66',
+    padding: 16,
+    gap: 12,
+    alignSelf: 'stretch',
+  },
+  emergencyCardHeader: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  emergencyEmoji: { fontSize: 28 },
+  emergencyCardTitle: { ...Typography.bodyMedium, color: Colors.text.primary, fontWeight: '700' },
+  emergencyCardSub: { ...Typography.caption, color: Colors.text.secondary, marginTop: 2 },
+  emergencyPills: { flexDirection: 'row', gap: 10 },
+  emergencyPill: {
+    flex: 1, borderRadius: Radius.md, padding: 12, alignItems: 'center', gap: 4,
+    backgroundColor: Colors.bg.elevated, borderWidth: 1, borderColor: Colors.border.default,
+  },
+  emergencyPillActive: { backgroundColor: '#FFB347' + '20', borderColor: '#FFB347' },
+  emergencyPillText: { ...Typography.caption, color: Colors.text.secondary, fontWeight: '600' },
+  emergencyPillAmount: { ...Typography.bodyMedium, color: Colors.text.secondary, fontWeight: '700' },
+  emergencyPillTextActive: { color: '#FFB347' },
+  emergencyActions: { flexDirection: 'row', gap: 10 },
+  emergencySkip: {
+    flex: 1, paddingVertical: 12, borderRadius: Radius.md,
+    borderWidth: 1, borderColor: Colors.border.default, alignItems: 'center',
+  },
+  emergencySkipText: { ...Typography.bodyMedium, color: Colors.text.secondary },
+  emergencyCreate: {
+    flex: 2, paddingVertical: 12, borderRadius: Radius.md,
+    backgroundColor: '#FFB347', alignItems: 'center',
+  },
+  emergencyCreateText: { ...Typography.bodyMedium, color: '#000', fontWeight: '700' },
 
   // Done styles
   doneIcon: {

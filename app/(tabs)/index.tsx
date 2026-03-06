@@ -19,6 +19,96 @@ import { CashFlowCard } from '../../components/dashboard/CashFlowCard';
 import { Skeleton } from '../../components/ui/Skeleton';
 import { useData } from '../../contexts/DataContext';
 import { useSettings } from '../../contexts/SettingsContext';
+import { calculateEstimated730Refund, calculateForfettarioNetto } from '../../utils/taxCalculator';
+import type { Transaction, Goal } from '../../types';
+
+function EmergencyFundCard({ goals, monthlyExpenses }: { goals: Goal[]; monthlyExpenses: number }) {
+  const goal = goals.find((g) => g.title === 'Fondo di Emergenza');
+  if (!goal) return null;
+
+  const progress = goal.targetAmount > 0 ? Math.min(1, goal.savedAmount / goal.targetAmount) : 0;
+  const monthsCovered = monthlyExpenses > 0 ? goal.savedAmount / monthlyExpenses : 0;
+  const isOk = monthsCovered >= 3;
+
+  return (
+    <View style={styles.emergencyCard}>
+      <View style={styles.emergencyRow}>
+        <Text style={styles.emergencyEmoji}>🛡️</Text>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.emergencyTitle}>Fondo di Emergenza</Text>
+          <Text style={[styles.emergencyStatus, { color: isOk ? Colors.semantic.success : Colors.semantic.warning }]}>
+            {isOk ? `${monthsCovered.toFixed(1)} mesi coperti` : 'Fondo incompleto'}
+          </Text>
+        </View>
+        <View style={styles.emergencyAmounts}>
+          <Text style={styles.emergencyActual}>€{goal.savedAmount.toLocaleString('it-IT')}</Text>
+          <Text style={styles.emergencyTarget}>/ €{goal.targetAmount.toLocaleString('it-IT')}</Text>
+        </View>
+      </View>
+      <View style={styles.emergencyBarBg}>
+        <View
+          style={[
+            styles.emergencyBarFill,
+            {
+              width: `${Math.round(progress * 100)}%` as any,
+              backgroundColor: isOk ? Colors.semantic.success : '#FFB347',
+            },
+          ]}
+        />
+      </View>
+    </View>
+  );
+}
+
+function FiscoCard({ transactions }: { transactions: Transaction[] }) {
+  const { fiscalProfile } = useSettings();
+  if (fiscalProfile.type === 'altro') return null;
+
+  if (fiscalProfile.type === 'dipendente') {
+    const result = calculateEstimated730Refund(transactions);
+    if (result.estimatedRefund <= 0) return null;
+    return (
+      <View style={styles.fiscoCard}>
+        <View style={styles.fiscoHeader}>
+          <Ionicons name="receipt" size={18} color={Colors.semantic.success} />
+          <Text style={styles.fiscoTitle}>Rimborso 730 stimato</Text>
+        </View>
+        <Text style={styles.fiscoValue}>€{result.estimatedRefund.toFixed(0)}</Text>
+      </View>
+    );
+  }
+
+  const currentYear = new Date().getFullYear().toString();
+  const ytdIncome = transactions
+    .filter((t) => t.amount > 0 && t.category !== 'transfer' && t.date.startsWith(currentYear))
+    .reduce((s, t) => s + t.amount, 0);
+  const result = calculateForfettarioNetto(ytdIncome, fiscalProfile);
+  if (result.recommendedSetAside <= 0) return null;
+
+  return (
+    <View style={styles.fiscoCard}>
+      <View style={styles.fiscoHeader}>
+        <Ionicons name="document-text" size={18} color={Colors.accent.primary} />
+        <Text style={styles.fiscoTitle}>Regime Forfettario</Text>
+      </View>
+      <View style={styles.fiscoRow}>
+        <Text style={styles.fiscoLabel}>Accantona</Text>
+        <Text style={styles.fiscoValue}>€{result.recommendedSetAside.toFixed(0)}/mese</Text>
+      </View>
+      <View style={styles.fiscoRow}>
+        <Text style={styles.fiscoLabel}>Residuo 85k</Text>
+        <Text
+          style={[
+            styles.fiscoValue,
+            { color: result.thresholdResidual < 15000 ? Colors.semantic.danger : Colors.text.primary },
+          ]}
+        >
+          €{result.thresholdResidual.toFixed(0)}
+        </Text>
+      </View>
+    </View>
+  );
+}
 
 export default function DashboardScreen() {
   const { transactions, budgets, goals, subscriptions, monthSummary, isLoading } = useData();
@@ -81,6 +171,7 @@ export default function DashboardScreen() {
         ) : (
           <>
             <NetWorthCard summary={monthSummary} />
+            <EmergencyFundCard goals={goals} monthlyExpenses={monthSummary.expenses} />
             <IncomeExpenseRow
               income={monthSummary.income}
               expenses={monthSummary.expenses}
@@ -91,6 +182,7 @@ export default function DashboardScreen() {
               subscriptions={subscriptions}
               transactions={transactions}
             />
+            <FiscoCard transactions={transactions} />
             {settings.features.goals && goals.length > 0 && <GoalCard goal={goals[0]} />}
             {settings.features.budgets && <BudgetSection budgets={budgets} />}
             <RecentTransactions
@@ -178,5 +270,84 @@ const styles = StyleSheet.create({
   },
   bottomPad: {
     height: 16,
+  },
+  emergencyCard: {
+    backgroundColor: Colors.bg.card,
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+    borderColor: '#FFB347' + '66',
+    padding: 16,
+    gap: 10,
+  },
+  emergencyRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  emergencyEmoji: {
+    fontSize: 24,
+  },
+  emergencyTitle: {
+    ...Typography.bodyMedium,
+    color: Colors.text.primary,
+    fontWeight: '600',
+  },
+  emergencyStatus: {
+    ...Typography.caption,
+    marginTop: 2,
+  },
+  emergencyAmounts: {
+    alignItems: 'flex-end',
+  },
+  emergencyActual: {
+    ...Typography.bodyMedium,
+    color: Colors.text.primary,
+    fontWeight: '700',
+  },
+  emergencyTarget: {
+    ...Typography.caption,
+    color: Colors.text.muted,
+  },
+  emergencyBarBg: {
+    height: 6,
+    backgroundColor: Colors.bg.elevated,
+    borderRadius: 3,
+    overflow: 'hidden',
+  },
+  emergencyBarFill: {
+    height: 6,
+    borderRadius: 3,
+  },
+  fiscoCard: {
+    backgroundColor: Colors.bg.card,
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+    borderColor: Colors.accent.primary + '44',
+    padding: 16,
+    gap: 8,
+  },
+  fiscoHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  fiscoTitle: {
+    ...Typography.bodyMedium,
+    color: Colors.text.secondary,
+    fontWeight: '600',
+  },
+  fiscoRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  fiscoLabel: {
+    ...Typography.caption,
+    color: Colors.text.muted,
+  },
+  fiscoValue: {
+    ...Typography.h3,
+    color: Colors.text.primary,
+    fontWeight: '700',
   },
 });

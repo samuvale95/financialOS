@@ -169,6 +169,25 @@ export function categorize(description: string): CategoryId {
   return 'other';
 }
 
+export type TaxCategory = 'medical' | 'pharmacy' | 'home_renovation' | 'education' | 'business_expense';
+
+export function getTaxInfo(
+  description: string,
+  category: string,
+): { isTaxRelevant: boolean; taxCategory?: TaxCategory } {
+  if (category === 'health') return { isTaxRelevant: true, taxCategory: 'medical' };
+  if (category === 'pharmacy') return { isTaxRelevant: true, taxCategory: 'pharmacy' };
+  if (category === 'education') return { isTaxRelevant: true, taxCategory: 'education' };
+  const lower = description.toLowerCase();
+  if (lower.includes('dentista') || lower.includes('odontoiatra') || lower.includes('medico') || lower.includes('visita')) {
+    return { isTaxRelevant: true, taxCategory: 'medical' };
+  }
+  if (lower.includes('università') || lower.includes('tasse universitarie') || lower.includes('master')) {
+    return { isTaxRelevant: true, taxCategory: 'education' };
+  }
+  return { isTaxRelevant: false };
+}
+
 /**
  * Returns a normalized merchant key for grouping transactions.
  * Uses the merchant field if available, otherwise normalizes the description
