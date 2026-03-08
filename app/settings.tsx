@@ -14,6 +14,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import { Colors, Typography, Radius, Spacing } from '../constants/theme';
 import { useSettings } from '../contexts/SettingsContext';
+import { hasGemini } from '../utils/geminiParser';
 import { useData } from '../contexts/DataContext';
 import { ITALIAN_BANKS } from '../constants/italianBanks';
 import type { ItalianBank } from '../constants/italianBanks';
@@ -497,6 +498,17 @@ export default function SettingsScreen() {
             value={settings.import.manual}
             onToggle={(v) => updateSetting('import', 'manual', v)}
           />
+          {hasGemini && (
+            <>
+              <View style={styles.separator} />
+              <SettingRow
+                label="Gemini AI Parsing"
+                description="Usa Gemini 2.0 Flash per leggere e classificare i file"
+                value={settings.import.geminiParsing}
+                onToggle={(v) => updateSetting('import', 'geminiParsing', v)}
+              />
+            </>
+          )}
         </Section>
 
         {/* Preferenze */}

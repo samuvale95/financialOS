@@ -62,8 +62,9 @@ export default function ImportaScreen() {
       if (picked.canceled || !picked.assets?.[0]) { setPhase('idle'); return; }
       const asset = picked.assets[0];
       setPhase('parsing');
+      console.log('[Import CSV] hasGemini:', hasGemini, '| geminiParsing:', settings.import.geminiParsing, '| file:', asset.name);
       let result: ParseResult;
-      if (hasGemini) {
+      if (hasGemini && settings.import.geminiParsing) {
         result = await parseWithGemini(asset.uri, asset.name ?? 'file.csv');
       } else {
         const content = await FileSystem.readAsStringAsync(asset.uri, {
@@ -99,9 +100,9 @@ export default function ImportaScreen() {
       const asset = picked.assets[0];
       const name = (asset.name ?? '').toLowerCase();
       setPhase('parsing');
-
+      console.log('[Import Excel] hasGemini:', hasGemini, '| geminiParsing:', settings.import.geminiParsing, '| file:', asset.name);
       let result: ParseResult;
-      if (hasGemini) {
+      if (hasGemini && settings.import.geminiParsing) {
         result = await parseWithGemini(asset.uri, asset.name ?? 'file.xlsx');
       } else if (name.endsWith('.csv') || name.endsWith('.txt')) {
         const content = await FileSystem.readAsStringAsync(asset.uri, {
@@ -137,8 +138,9 @@ export default function ImportaScreen() {
       if (picked.canceled || !picked.assets?.[0]) { setPhase('idle'); return; }
       const asset = picked.assets[0];
       setPhase('parsing');
+      console.log('[Import PDF] hasGemini:', hasGemini, '| geminiParsing:', settings.import.geminiParsing, '| file:', asset.name);
       let result: ParseResult;
-      if (hasGemini) {
+      if (hasGemini && settings.import.geminiParsing) {
         result = await parseWithGemini(asset.uri, asset.name ?? 'file.pdf');
       } else {
         result = await parsePDF(asset.uri);
@@ -198,9 +200,9 @@ export default function ImportaScreen() {
         <View style={styles.centered}>
           <ActivityIndicator size="large" color={Colors.accent.primary} />
           <Text style={styles.loadingText}>
-            {phase === 'picking' ? 'Selezione file…' : hasGemini ? 'Gemini AI in analisi…' : 'Analisi in corso…'}
+            {phase === 'picking' ? 'Selezione file…' : (hasGemini && settings.import.geminiParsing) ? 'Gemini AI in analisi…' : 'Analisi in corso…'}
           </Text>
-          {phase === 'parsing' && hasGemini ? (
+          {phase === 'parsing' && hasGemini && settings.import.geminiParsing ? (
             <Text style={styles.loadingSubText}>Lettura e classificazione con Gemini 2.0 Flash</Text>
           ) : null}
         </View>

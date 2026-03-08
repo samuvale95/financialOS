@@ -23,6 +23,9 @@ const GEMINI_API_KEY = process.env.EXPO_PUBLIC_GEMINI_API_KEY ?? '';
 /** True when the app has a Gemini key baked in — use to gate AI parsing. */
 export const hasGemini = Boolean(GEMINI_API_KEY);
 
+// Diagnostic: printed once when the module loads
+console.log('[Gemini] modulo caricato | EXPO_PUBLIC_GEMINI_API_KEY presente:', Boolean(GEMINI_API_KEY), '| hasGemini:', hasGemini);
+
 // ── Category reference for the prompt ────────────────────────────────────────
 
 const CATEGORY_GUIDE = `
@@ -101,9 +104,10 @@ export async function parseWithGemini(
   const name = fileName.toLowerCase();
 
   let parts: object[];
+  let fileType: string;
 
   if (name.endsWith('.pdf')) {
-    // PDF: Gemini reads it natively from base64 inline_data
+    fileType = 'PDF (inline base64)';
     const base64 = await FileSystem.readAsStringAsync(uri, {
       encoding: FileSystem.EncodingType.Base64 as any,
     });
@@ -112,17 +116,20 @@ export async function parseWithGemini(
       { inline_data: { mime_type: 'application/pdf', data: base64 } },
     ];
   } else if (name.endsWith('.xlsx') || name.endsWith('.xls') || name.endsWith('.ods')) {
-    // Excel: convert to CSV first, then send as text
+    fileType = 'Excel → CSV';
     const csv = await excelToCsv(uri);
     parts = [{ text: `${PROMPT}\n\n--- CONTENUTO FILE (CSV) ---\n${csv}` }];
   } else {
-    // CSV / TXT: raw text
+    fileType = 'CSV/TXT';
     const text = await FileSystem.readAsStringAsync(uri, {
       encoding: FileSystem.EncodingType.UTF8,
     });
     parts = [{ text: `${PROMPT}\n\n--- CONTENUTO FILE ---\n${text}` }];
   }
 
+  console.log(`[Gemini] → chiamata API | file: "${fileName}" | tipo: ${fileType} | modello: gemini-2.0-flash`);
+
+  const t0 = Date.now();
   const response = await fetch(`${GEMINI_ENDPOINT}?key=${apiKey}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -138,13 +145,19 @@ export async function parseWithGemini(
 
   if (!response.ok) {
     const body = await response.text().catch(() => '');
+    console.error(`[Gemini] ✗ errore HTTP ${response.status}:`, body.slice(0, 300));
     if (response.status === 400) throw new Error('Gemini: richiesta non valida. Verifica la API key.');
     if (response.status === 429) throw new Error('Gemini: quota esaurita. Riprova tra qualche minuto.');
     throw new Error(`Gemini API error ${response.status}: ${body.slice(0, 150)}`);
   }
 
+  const elapsed = Date.now() - t0;
   const data = await response.json();
   const rawText: string = data.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+
+  console.log(`[Gemini] ← risposta ricevuta in ${elapsed}ms | HTTP ${response.status}`);
+  console.log('[Gemini] output grezzo:\n', rawText);
+
   if (!rawText) throw new Error('Gemini ha restituito una risposta vuota.');
 
   let parsed: any;
@@ -156,6 +169,9 @@ export async function parseWithGemini(
     if (m) parsed = JSON.parse(m[1]);
     else throw new Error('Risposta Gemini non è JSON valido.');
   }
+
+  console.log(`[Gemini] transazioni estratte: ${parsed.transactions?.length ?? 0} | banca: "${parsed.bankName}" | skipped: ${parsed.skipped ?? 0}`);
+  console.log('[Gemini] prime 3 transazioni:', JSON.stringify(parsed.transactions?.slice(0, 3), null, 2));
 
   const transactions = ((parsed.transactions ?? []) as any[])
     .map((t) => ({

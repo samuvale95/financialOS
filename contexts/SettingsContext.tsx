@@ -17,6 +17,7 @@ export interface AppSettings {
     csv: boolean;
     excel: boolean;
     manual: boolean;
+    geminiParsing: boolean;
   };
   preferences: {
     haptics: boolean;
@@ -25,7 +26,7 @@ export interface AppSettings {
 
 const DEFAULT_SETTINGS: AppSettings = {
   features: { budgets: true, goals: true, portfolio: true, coach: true },
-  import: { pdf: true, csv: true, excel: true, manual: true },
+  import: { pdf: true, csv: true, excel: true, manual: true, geminiParsing: true },
   preferences: { haptics: true },
 };
 
