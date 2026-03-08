@@ -17,11 +17,12 @@ import {
   loadAccounts, saveAccounts,
   loadSubscriptions, saveSubscriptions,
   loadMerchantRules, saveMerchantRules,
+  loadBrandRules, saveBrandRules,
   loadInsightProfile, saveInsightProfile,
   clearAllData,
 } from '../utils/storage';
 import { refreshAssetIfStale } from '../utils/financialApi';
-import { getMerchantKey, getTaxInfo } from '../utils/categorizer';
+import { getMerchantKey, getTaxInfo, extractBrand } from '../utils/categorizer';
 import type { InsightProfile } from '../utils/insightProfile';
 import { EMPTY_PROFILE } from '../utils/insightProfile';
 
@@ -141,7 +142,13 @@ interface AppData {
   updateSubscription: (id: string, updates: Partial<Subscription>) => void;
   deleteSubscription: (id: string) => void;
   merchantRules: Record<string, CategoryId>;
+  brandRules: Record<string, CategoryId>;
   setMerchantRule: (merchantKey: string, category: CategoryId) => void;
+  /** Save merchant rule without re-categorizing existing transactions (use after selective bulk update). */
+  registerMerchantRule: (merchantKey: string, category: CategoryId) => void;
+  /** Save brand-level rule learned from a user correction. */
+  setBrandRule: (brand: string, category: CategoryId) => void;
+  updateTransactionCategories: (ids: string[], category: CategoryId) => void;
   refreshAssetPrices: () => Promise<void>;
   answerQuestion: (questionId: string, tag: string) => void;
   dismissQuestion: (questionId: string) => void;
@@ -158,6 +165,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
   const [accounts, setAccounts] = useState<BankAccount[]>([]);
   const [subscriptions, setSubscriptions] = useState<Subscription[]>([]);
   const [merchantRules, setMerchantRulesState] = useState<Record<string, CategoryId>>({});
+  const [brandRules, setBrandRulesState] = useState<Record<string, CategoryId>>({});
   const [insightProfile, setInsightProfile] = useState<InsightProfile>(EMPTY_PROFILE);
   const [isLoading, setIsLoading] = useState(true);
 
@@ -170,8 +178,9 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       loadAccounts(),
       loadSubscriptions(),
       loadMerchantRules(),
+      loadBrandRules(),
       loadInsightProfile(),
-    ]).then(([txs, buds, ass, gls, accs, subs, rules, profile]) => {
+    ]).then(([txs, buds, ass, gls, accs, subs, rules, brules, profile]) => {
       setTransactions(txs);
       // Deduplicate assets by id in case of corrupted storage
       const seenAssets = new Set<string>();
@@ -185,6 +194,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       setAccounts(accs);
       setSubscriptions(subs);
       setMerchantRulesState(rules as Record<string, CategoryId>);
+      setBrandRulesState(brules as Record<string, CategoryId>);
       setInsightProfile(profile);
       if (buds.length > 0) {
         setStoredBudgets(buds);
@@ -242,7 +252,9 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
         .filter((t) => !existingKeys.has(`${t.date}|${t.amount}|${t.description}`))
         .map((t) => {
           const key = getMerchantKey(t);
-          const ruleCategory = merchantRules[key];
+          const brand = extractBrand(t);
+          // Priority: exact merchant rule > brand-level rule > categorizer output
+          const ruleCategory = merchantRules[key] ?? (brand.length >= 4 ? brandRules[brand] : undefined);
           const effectiveCategory = ruleCategory ?? t.category;
           const taxInfo = getTaxInfo(t.description, effectiveCategory);
           return {
@@ -353,6 +365,39 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     });
   }, []);
 
+  // Save merchant rule without re-categorizing existing transactions.
+  // Use this after a selective bulk update to avoid overriding user's deselections.
+  const registerMerchantRule = useCallback((merchantKey: string, category: CategoryId) => {
+    setMerchantRulesState((prev) => {
+      const next = { ...prev, [merchantKey]: category };
+      saveMerchantRules(next);
+      return next;
+    });
+  }, []);
+
+  // Save a brand-level rule learned from a user correction.
+  // Only saved if the brand is specific enough (>= 4 chars) to avoid false matches.
+  const setBrandRule = useCallback((brand: string, category: CategoryId) => {
+    if (!brand || brand.length < 4) return;
+    setBrandRulesState((prev) => {
+      const next = { ...prev, [brand]: category };
+      saveBrandRules(next);
+      return next;
+    });
+  }, []);
+
+  // Update category for a specific set of transaction IDs only (no merchant rule side-effect).
+  const updateTransactionCategories = useCallback((ids: string[], category: CategoryId) => {
+    const idSet = new Set(ids);
+    setTransactions((prev) => {
+      const updated = prev.map((tx) =>
+        idSet.has(tx.id) ? { ...tx, category } : tx
+      );
+      saveTransactions(updated);
+      return updated;
+    });
+  }, []);
+
   const refreshAssetPrices = useCallback(async () => {
     const current = assets;
     await Promise.all(
@@ -426,6 +471,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     setAccounts([]);
     setSubscriptions([]);
     setMerchantRulesState({});
+    setBrandRulesState({});
     setInsightProfile(EMPTY_PROFILE);
   }, []);
 
@@ -457,7 +503,11 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
         updateSubscription,
         deleteSubscription,
         merchantRules,
+        brandRules,
         setMerchantRule,
+        registerMerchantRule,
+        setBrandRule,
+        updateTransactionCategories,
         refreshAssetPrices,
         answerQuestion,
         dismissQuestion,

@@ -763,6 +763,7 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
 
+
   // Fisco profile
   fiscoPicker: {
     flexDirection: 'row',

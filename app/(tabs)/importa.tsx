@@ -22,6 +22,7 @@ import { useData } from '../../contexts/DataContext';
 import { parseCSV, type ParseResult } from '../../utils/parsers';
 import { parseExcel } from '../../utils/excelParser';
 import { parsePDF } from '../../utils/pdfParser';
+import { parseWithGemini, hasGemini } from '../../utils/geminiParser';
 import type { Transaction } from '../../types';
 
 type ImportPhase = 'idle' | 'picking' | 'parsing' | 'preview' | 'importing' | 'done' | 'error';
@@ -59,11 +60,17 @@ export default function ImportaScreen() {
         copyToCacheDirectory: true,
       });
       if (picked.canceled || !picked.assets?.[0]) { setPhase('idle'); return; }
+      const asset = picked.assets[0];
       setPhase('parsing');
-      const content = await FileSystem.readAsStringAsync(picked.assets[0].uri, {
-        encoding: FileSystem.EncodingType.UTF8,
-      });
-      const result = parseCSV(content);
+      let result: ParseResult;
+      if (hasGemini) {
+        result = await parseWithGemini(asset.uri, asset.name ?? 'file.csv');
+      } else {
+        const content = await FileSystem.readAsStringAsync(asset.uri, {
+          encoding: FileSystem.EncodingType.UTF8,
+        });
+        result = parseCSV(content);
+      }
       if (result.transactions.length === 0) {
         setErrorMsg('Nessuna transazione valida trovata nel file CSV.');
         setPhase('error');
@@ -72,7 +79,8 @@ export default function ImportaScreen() {
       setPreview({ result });
       setPhase('preview');
     } catch (e) {
-      setErrorMsg('Errore durante la lettura del file CSV.');
+      const msg = e instanceof Error ? e.message : String(e);
+      setErrorMsg(`Errore: ${msg}`);
       setPhase('error');
     }
   };
@@ -92,8 +100,10 @@ export default function ImportaScreen() {
       const name = (asset.name ?? '').toLowerCase();
       setPhase('parsing');
 
-      let result;
-      if (name.endsWith('.csv') || name.endsWith('.txt')) {
+      let result: ParseResult;
+      if (hasGemini) {
+        result = await parseWithGemini(asset.uri, asset.name ?? 'file.xlsx');
+      } else if (name.endsWith('.csv') || name.endsWith('.txt')) {
         const content = await FileSystem.readAsStringAsync(asset.uri, {
           encoding: FileSystem.EncodingType.UTF8,
         });
@@ -111,7 +121,8 @@ export default function ImportaScreen() {
       setPreview({ result });
       setPhase('preview');
     } catch (e) {
-      setErrorMsg('Errore durante la lettura del file. Assicurati che il file sia un foglio di calcolo valido (.xlsx, .csv).');
+      const msg = e instanceof Error ? e.message : String(e);
+      setErrorMsg(`Errore: ${msg}`);
       setPhase('error');
     }
   };
@@ -124,17 +135,24 @@ export default function ImportaScreen() {
         copyToCacheDirectory: true,
       });
       if (picked.canceled || !picked.assets?.[0]) { setPhase('idle'); return; }
+      const asset = picked.assets[0];
       setPhase('parsing');
-      const result = await parsePDF(picked.assets[0].uri);
+      let result: ParseResult;
+      if (hasGemini) {
+        result = await parseWithGemini(asset.uri, asset.name ?? 'file.pdf');
+      } else {
+        result = await parsePDF(asset.uri);
+      }
       if (result.transactions.length === 0) {
-        setErrorMsg('Nessuna transazione trovata nel PDF. Verifica che sia un estratto conto di una banca italiana supportata.');
+        setErrorMsg('Nessuna transazione trovata nel PDF. Verifica che sia un estratto conto valido.');
         setPhase('error');
         return;
       }
       setPreview({ result });
       setPhase('preview');
     } catch (e) {
-      setErrorMsg('Errore durante la lettura del PDF. Assicurati che il file non sia protetto da password.');
+      const msg = e instanceof Error ? e.message : String(e);
+      setErrorMsg(`Errore: ${msg}`);
       setPhase('error');
     }
   };
@@ -180,8 +198,11 @@ export default function ImportaScreen() {
         <View style={styles.centered}>
           <ActivityIndicator size="large" color={Colors.accent.primary} />
           <Text style={styles.loadingText}>
-            {phase === 'picking' ? 'Selezione file…' : 'Analisi in corso…'}
+            {phase === 'picking' ? 'Selezione file…' : hasGemini ? 'Gemini AI in analisi…' : 'Analisi in corso…'}
           </Text>
+          {phase === 'parsing' && hasGemini ? (
+            <Text style={styles.loadingSubText}>Lettura e classificazione con Gemini 2.0 Flash</Text>
+          ) : null}
         </View>
       </SafeAreaView>
     );
@@ -567,6 +588,11 @@ const styles = StyleSheet.create({
   loadingText: {
     ...Typography.body,
     color: Colors.text.secondary,
+  },
+  loadingSubText: {
+    ...Typography.caption,
+    color: Colors.text.muted,
+    marginTop: 4,
   },
   header: {
     gap: 4,

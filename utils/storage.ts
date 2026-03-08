@@ -14,6 +14,7 @@ const PATHS = {
   accounts: `${BASE}financialOS_accounts.json`,
   subscriptions: `${BASE}financialOS_subscriptions.json`,
   merchantRules: `${BASE}financialOS_merchantRules.json`,
+  brandRules: `${BASE}financialOS_brandRules.json`,
   onboarding: `${BASE}financialOS_onboarding.json`,
   insightProfile: `${BASE}financialOS_insightProfile.json`,
   fiscalProfile: `${BASE}financialOS_fiscalProfile.json`,
@@ -81,6 +82,12 @@ export const loadMerchantRules = () =>
   loadJSONObject<Record<string, CategoryId>>(PATHS.merchantRules, {});
 export const saveMerchantRules = (data: Record<string, CategoryId>) =>
   saveJSONObject(PATHS.merchantRules, data);
+
+/** Brand-level rules (e.g. "esselunga" → "groceries") learned from user corrections. */
+export const loadBrandRules = () =>
+  loadJSONObject<Record<string, CategoryId>>(PATHS.brandRules, {});
+export const saveBrandRules = (data: Record<string, CategoryId>) =>
+  saveJSONObject(PATHS.brandRules, data);
 
 export const loadFiscalProfile = () =>
   loadJSONObject<FiscalProfile>(PATHS.fiscalProfile, { type: 'dipendente' });

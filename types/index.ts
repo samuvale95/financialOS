@@ -12,6 +12,7 @@ export interface Transaction {
   description: string;
   category: CategoryId;
   merchant?: string;
+  location?: string;
   note?: string;
   accountId?: string;
   transferToAccountId?: string;

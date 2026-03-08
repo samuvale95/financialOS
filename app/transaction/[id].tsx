@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   View,
   Text,
@@ -18,7 +18,8 @@ import { CATEGORIES, EXPENSE_CATEGORIES } from '../../constants/categories';
 import type { CategoryId } from '../../constants/categories';
 import { ProgressBar } from '../../components/ui/ProgressBar';
 import { useData } from '../../contexts/DataContext';
-import { getMerchantKey } from '../../utils/categorizer';
+import { getMerchantKey, extractBrand, findSimilarTransactions } from '../../utils/categorizer';
+import type { Transaction } from '../../types';
 
 function formatAmount(amount: number): string {
   const sign = amount >= 0 ? '+' : '-';
@@ -33,6 +34,11 @@ function formatFullDate(dateStr: string): string {
     month: 'long',
     year: 'numeric',
   });
+}
+
+function formatShortDate(dateStr: string): string {
+  const d = new Date(dateStr);
+  return d.toLocaleDateString('it-IT', { day: 'numeric', month: 'short', year: '2-digit' });
 }
 
 // ── Category Picker Modal ─────────────────────────────────────────────────────
@@ -87,15 +93,146 @@ function CategoryPickerModal({
   );
 }
 
+// ── Bulk Reclassify Modal ─────────────────────────────────────────────────────
+
+function BulkReclassifyModal({
+  visible,
+  sourceTx,
+  similarTxs,
+  newCategory,
+  selectedIds,
+  onToggle,
+  onSelectAll,
+  onApply,
+  onCancel,
+}: {
+  visible: boolean;
+  sourceTx: Transaction;
+  similarTxs: Transaction[];
+  newCategory: CategoryId;
+  selectedIds: Set<string>;
+  onToggle: (id: string) => void;
+  onSelectAll: (all: boolean) => void;
+  onApply: () => void;
+  onCancel: () => void;
+}) {
+  const cat = CATEGORIES[newCategory];
+  const allSelected = similarTxs.every((tx) => selectedIds.has(tx.id));
+  const totalSelected = selectedIds.size + 1; // +1 for source tx (always included)
+
+  return (
+    <Modal visible={visible} transparent animationType="slide" onRequestClose={onCancel}>
+      <Pressable style={brStyles.overlay} onPress={onCancel}>
+        <Pressable style={brStyles.sheet} onPress={() => {}}>
+          <View style={brStyles.handle} />
+
+          {/* Header */}
+          <View style={brStyles.header}>
+            <View style={[brStyles.catBadge, { backgroundColor: cat.bgColor }]}>
+              <Ionicons name={cat.icon as any} size={14} color={cat.color} />
+              <Text style={[brStyles.catBadgeText, { color: cat.color }]}>{cat.label}</Text>
+            </View>
+            <Text style={brStyles.title}>Applica a tutte le simili?</Text>
+            <Text style={brStyles.subtitle}>
+              Trovate {similarTxs.length + 1} transazioni dello stesso merchant.
+              {'\n'}Deseleziona quelle da escludere.
+            </Text>
+          </View>
+
+          {/* Select all toggle */}
+          {similarTxs.length > 1 && (
+            <TouchableOpacity
+              style={brStyles.selectAllRow}
+              onPress={() => onSelectAll(!allSelected)}
+              activeOpacity={0.7}
+            >
+              <View style={[brStyles.checkbox, allSelected && brStyles.checkboxActive]}>
+                {allSelected && <Ionicons name="checkmark" size={12} color="#fff" />}
+              </View>
+              <Text style={brStyles.selectAllText}>
+                {allSelected ? 'Deseleziona tutte' : 'Seleziona tutte'}
+              </Text>
+            </TouchableOpacity>
+          )}
+
+          <ScrollView style={brStyles.list} showsVerticalScrollIndicator={false}>
+            {/* Source transaction — always included, visually locked */}
+            <View style={[brStyles.txRow, brStyles.txRowSource]}>
+              <View style={[brStyles.checkbox, brStyles.checkboxActive, brStyles.checkboxLocked]}>
+                <Ionicons name="checkmark" size={12} color="#fff" />
+              </View>
+              <View style={brStyles.txInfo}>
+                <Text style={brStyles.txDesc} numberOfLines={1}>
+                  {sourceTx.merchant || sourceTx.description}
+                </Text>
+                <Text style={brStyles.txMeta}>
+                  {formatShortDate(sourceTx.date)} · questa transazione
+                </Text>
+              </View>
+              <Text style={brStyles.txAmount}>{formatAmount(sourceTx.amount)}</Text>
+            </View>
+
+            {/* Similar transactions */}
+            {similarTxs.map((tx) => {
+              const isSelected = selectedIds.has(tx.id);
+              return (
+                <TouchableOpacity
+                  key={tx.id}
+                  style={brStyles.txRow}
+                  onPress={() => onToggle(tx.id)}
+                  activeOpacity={0.7}
+                >
+                  <View style={[brStyles.checkbox, isSelected && brStyles.checkboxActive]}>
+                    {isSelected && <Ionicons name="checkmark" size={12} color="#fff" />}
+                  </View>
+                  <View style={brStyles.txInfo}>
+                    <Text style={brStyles.txDesc} numberOfLines={1}>
+                      {tx.merchant || tx.description}
+                    </Text>
+                    <Text style={brStyles.txMeta}>{formatShortDate(tx.date)}</Text>
+                  </View>
+                  <Text style={brStyles.txAmount}>{formatAmount(tx.amount)}</Text>
+                </TouchableOpacity>
+              );
+            })}
+          </ScrollView>
+
+          {/* Footer */}
+          <View style={brStyles.footer}>
+            <TouchableOpacity style={brStyles.cancelBtn} onPress={onCancel} activeOpacity={0.7}>
+              <Text style={brStyles.cancelText}>Annulla</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={brStyles.applyBtn} onPress={onApply} activeOpacity={0.8}>
+              <Text style={brStyles.applyText}>
+                Applica a {totalSelected} transazion{totalSelected === 1 ? 'e' : 'i'}
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </Pressable>
+      </Pressable>
+    </Modal>
+  );
+}
+
 // ── Main screen ───────────────────────────────────────────────────────────────
 
 export default function TransactionDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const { transactions, budgets, setMerchantRule } = useData();
+  const { transactions, budgets, setMerchantRule, registerMerchantRule, setBrandRule, updateTransactionCategories } = useData();
+
   const [showCategoryPicker, setShowCategoryPicker] = useState(false);
+  const [showBulkModal, setShowBulkModal] = useState(false);
+  const [pendingCategory, setPendingCategory] = useState<CategoryId | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [reclassifyFeedback, setReclassifyFeedback] = useState<string | null>(null);
 
   const t = transactions.find((tx) => tx.id === id);
+
+  // All similar transactions across ALL months (fuzzy brand matching)
+  const similarByMerchant = useMemo(() => {
+    if (!t) return [];
+    return findSimilarTransactions(t, transactions);
+  }, [t, transactions]);
 
   if (!t) {
     return (
@@ -115,23 +252,61 @@ export default function TransactionDetailScreen() {
   const budget = budgets.find((b) => b.category === t.category);
   const budgetProgress = budget ? budget.spent / budget.limit : null;
 
-  // Similar transactions: same category, excluding current
-  const similar = transactions
+  // Similar shown in the detail card (different category, by description)
+  const similarSection = transactions
     .filter((tx) => tx.category === t.category && tx.id !== t.id)
     .slice(0, 3);
 
-  const handleReclassify = (newCategoryId: CategoryId) => {
-    const merchantKey = getMerchantKey(t);
-    const affectedCount = transactions.filter(
-      (tx) => getMerchantKey(tx) === merchantKey && tx.id !== t.id
-    ).length;
-    setMerchantRule(merchantKey, newCategoryId);
-    setShowCategoryPicker(false);
-    setReclassifyFeedback(
-      `Categoria aggiornata.${affectedCount > 0 ? ` ${affectedCount} transazioni simili riclassificate.` : ''}`
-    );
+  const merchantKey = getMerchantKey(t);
+
+  const showFeedback = (msg: string) => {
+    setReclassifyFeedback(msg);
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     setTimeout(() => setReclassifyFeedback(null), 4000);
+  };
+
+  // Step 1: user picks a category
+  const handleCategorySelected = (newCat: CategoryId) => {
+    setShowCategoryPicker(false);
+    if (similarByMerchant.length === 0) {
+      // No similar → apply directly, use setMerchantRule for full re-categorize + save
+      updateTransactionCategories([t.id], newCat);
+      setMerchantRule(merchantKey, newCat);
+      setBrandRule(extractBrand(t), newCat);
+      showFeedback('Categoria aggiornata.');
+    } else {
+      // Show bulk modal with all similar pre-selected
+      setPendingCategory(newCat);
+      setSelectedIds(new Set(similarByMerchant.map((tx) => tx.id)));
+      setShowBulkModal(true);
+    }
+  };
+
+  // Step 2: user confirms bulk apply
+  const handleBulkApply = () => {
+    if (!pendingCategory) return;
+    const idsToUpdate = [t.id, ...Array.from(selectedIds)];
+    // Update only selected transactions (selective, not all-or-nothing)
+    updateTransactionCategories(idsToUpdate, pendingCategory);
+    // Save rules for future imports without re-categorizing (user already chose selectively)
+    registerMerchantRule(merchantKey, pendingCategory);
+    setBrandRule(extractBrand(t), pendingCategory);
+    setShowBulkModal(false);
+    setPendingCategory(null);
+    const n = idsToUpdate.length;
+    showFeedback(`Categoria aggiornata per ${n} transazion${n === 1 ? 'e' : 'i'}.`);
+  };
+
+  const handleToggle = (txId: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(txId)) next.delete(txId); else next.add(txId);
+      return next;
+    });
+  };
+
+  const handleSelectAll = (all: boolean) => {
+    setSelectedIds(all ? new Set(similarByMerchant.map((tx) => tx.id)) : new Set());
   };
 
   return (
@@ -177,6 +352,12 @@ export default function TransactionDetailScreen() {
         {/* Details Card */}
         <View style={styles.card}>
           <DetailRow icon="storefront-outline" label="Merchant" value={t.merchant ?? '—'} />
+          {t.location && (
+            <>
+              <View style={styles.divider} />
+              <DetailRow icon="location-outline" label="Luogo" value={t.location} />
+            </>
+          )}
           <View style={styles.divider} />
           <DetailRow icon="calendar-outline" label="Data" value={formatFullDate(t.date)} />
           <View style={styles.divider} />
@@ -197,7 +378,12 @@ export default function TransactionDetailScreen() {
             onPress={() => setShowCategoryPicker(true)}
           >
             <Ionicons name="swap-horizontal-outline" size={16} color={Colors.accent.primary} />
-            <Text style={styles.changeCatBtnText}>Cambia categoria</Text>
+            <Text style={styles.changeCatBtnText}>
+              Cambia categoria
+              {similarByMerchant.length > 0 && (
+                <Text style={styles.changeCatHint}> · {similarByMerchant.length + 1} transazioni</Text>
+              )}
+            </Text>
           </TouchableOpacity>
         )}
         {reclassifyFeedback && (
@@ -206,13 +392,6 @@ export default function TransactionDetailScreen() {
             <Text style={styles.feedbackText}>{reclassifyFeedback}</Text>
           </View>
         )}
-
-        <CategoryPickerModal
-          visible={showCategoryPicker}
-          currentCategory={t.category}
-          onSelect={handleReclassify}
-          onClose={() => setShowCategoryPicker(false)}
-        />
 
         {/* Budget Section */}
         {budget && budgetProgress !== null && (
@@ -229,11 +408,11 @@ export default function TransactionDetailScreen() {
         )}
 
         {/* Similar Transactions */}
-        {similar.length > 0 && (
+        {similarSection.length > 0 && (
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>Transazioni Simili</Text>
             <View style={styles.card}>
-              {similar.map((s, i) => (
+              {similarSection.map((s, i) => (
                 <View key={s.id}>
                   <TouchableOpacity
                     style={styles.simRow}
@@ -252,7 +431,7 @@ export default function TransactionDetailScreen() {
                       {formatAmount(s.amount)}
                     </Text>
                   </TouchableOpacity>
-                  {i < similar.length - 1 && <View style={styles.divider} />}
+                  {i < similarSection.length - 1 && <View style={styles.divider} />}
                 </View>
               ))}
             </View>
@@ -261,6 +440,27 @@ export default function TransactionDetailScreen() {
 
         <View style={{ height: 32 }} />
       </ScrollView>
+
+      <CategoryPickerModal
+        visible={showCategoryPicker}
+        currentCategory={t.category}
+        onSelect={handleCategorySelected}
+        onClose={() => setShowCategoryPicker(false)}
+      />
+
+      {pendingCategory && (
+        <BulkReclassifyModal
+          visible={showBulkModal}
+          sourceTx={t}
+          similarTxs={similarByMerchant}
+          newCategory={pendingCategory}
+          selectedIds={selectedIds}
+          onToggle={handleToggle}
+          onSelectAll={handleSelectAll}
+          onApply={handleBulkApply}
+          onCancel={() => { setShowBulkModal(false); setPendingCategory(null); }}
+        />
+      )}
     </SafeAreaView>
   );
 }
@@ -391,6 +591,12 @@ const styles = StyleSheet.create({
     color: Colors.accent.primary,
     fontWeight: '600',
   },
+  changeCatHint: {
+    ...Typography.bodyMedium,
+    color: Colors.accent.primary,
+    fontWeight: '400',
+    opacity: 0.7,
+  },
   feedbackBanner: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -469,4 +675,118 @@ const cpStyles = StyleSheet.create({
     textAlign: 'center',
     fontWeight: '500',
   },
+});
+
+const brStyles = StyleSheet.create({
+  overlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.65)',
+    justifyContent: 'flex-end',
+  },
+  sheet: {
+    backgroundColor: Colors.bg.card,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    maxHeight: '80%',
+    paddingBottom: 8,
+  },
+  handle: {
+    width: 36,
+    height: 4,
+    backgroundColor: Colors.border.default,
+    borderRadius: 2,
+    alignSelf: 'center',
+    marginTop: 12,
+    marginBottom: 8,
+  },
+  header: {
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 20,
+    paddingBottom: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border.subtle,
+  },
+  catBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: Radius.full,
+    marginBottom: 2,
+  },
+  catBadgeText: { ...Typography.caption, fontWeight: '700' },
+  title: { ...Typography.h3, color: Colors.text.primary, textAlign: 'center' },
+  subtitle: {
+    ...Typography.caption,
+    color: Colors.text.muted,
+    textAlign: 'center',
+    lineHeight: 18,
+  },
+  selectAllRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border.subtle,
+  },
+  selectAllText: { ...Typography.caption, color: Colors.text.secondary, fontWeight: '600' },
+  list: { maxHeight: 380 },
+  txRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingHorizontal: 20,
+    paddingVertical: 13,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border.subtle,
+  },
+  txRowSource: { backgroundColor: Colors.bg.elevated },
+  checkbox: {
+    width: 22,
+    height: 22,
+    borderRadius: 6,
+    borderWidth: 2,
+    borderColor: Colors.border.default,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  checkboxActive: {
+    backgroundColor: Colors.accent.primary,
+    borderColor: Colors.accent.primary,
+  },
+  checkboxLocked: { opacity: 0.7 },
+  txInfo: { flex: 1 },
+  txDesc: { ...Typography.bodyMedium, color: Colors.text.primary, fontWeight: '500' },
+  txMeta: { ...Typography.micro, color: Colors.text.muted, marginTop: 2 },
+  txAmount: { ...Typography.bodyMedium, color: Colors.text.primary, fontWeight: '600', flexShrink: 0 },
+  footer: {
+    flexDirection: 'row',
+    gap: 10,
+    padding: 16,
+    paddingBottom: 28,
+    borderTopWidth: 1,
+    borderTopColor: Colors.border.subtle,
+  },
+  cancelBtn: {
+    flex: 1,
+    paddingVertical: 13,
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+    borderColor: Colors.border.default,
+    alignItems: 'center',
+  },
+  cancelText: { ...Typography.bodyMedium, color: Colors.text.secondary },
+  applyBtn: {
+    flex: 2,
+    paddingVertical: 13,
+    borderRadius: Radius.lg,
+    backgroundColor: Colors.accent.primary,
+    alignItems: 'center',
+  },
+  applyText: { ...Typography.bodyMedium, color: '#fff', fontWeight: '700' },
 });

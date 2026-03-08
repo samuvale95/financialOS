@@ -21,10 +21,39 @@ import type { ParseResult } from './parsers';
 let _pdfjs: any = null;
 function getPdfJs() {
   if (!_pdfjs) {
+    // Hermes (React Native) polyfills required before loading pdfjs-dist.
+    //
+    // 1. pdfjs uses `self` as a reference to the global scope (browser pattern).
+    //    In Hermes, `self` is undefined → must alias it to `global`.
+    //
+    // 2. pdfjs-dist's bundled core-js polyfill runs at module-init time and does:
+    //      var NativeDOMException = getBuiltIn('DOMException');   // = global.DOMException
+    //      var DOMExceptionPrototype = $DOMException.prototype = NativeDOMException.prototype;
+    //    If `DOMException` is not in the global scope (absent in some Hermes builds),
+    //    `NativeDOMException.prototype` throws "Cannot read property 'prototype' of undefined".
+    //    Fix: provide a minimal DOMException before the require.
+    const g = global as any;
+    if (typeof g.self === 'undefined') {
+      g.self = g;
+    }
+    if (typeof g.DOMException === 'undefined') {
+      class DOMException extends Error {
+        constructor(message?: string, name?: string) {
+          super(message);
+          this.name = name ?? 'DOMException';
+        }
+      }
+      g.DOMException = DOMException;
+    }
+    // Pre-load the worker module so Metro includes it in the bundle.
+    // When pdfjs detects a Node.js-like environment (React Native has `process`),
+    // it loads the worker via eval("require")(workerSrc) — no Web Worker needed.
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    require('pdfjs-dist/legacy/build/pdf.worker.js');
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     _pdfjs = require('pdfjs-dist/legacy/build/pdf.js');
-    // React Native has no Web Worker API — pdfjs falls back to main-thread.
-    _pdfjs.GlobalWorkerOptions.workerSrc = '';
+    // Non-empty path → passes the workerSrc guard; pdfjs uses eval("require") on it.
+    _pdfjs.GlobalWorkerOptions.workerSrc = 'pdfjs-dist/legacy/build/pdf.worker.js';
   }
   return _pdfjs;
 }
@@ -202,66 +231,123 @@ function calibrateColumns(allItems: PDFItem[], pageWidth: number): Columns {
   };
 }
 
-// ── Merchant extraction (Isybank-specific) ───────────────────────────────────
+// ── Description parsing ───────────────────────────────────────────────────────
 
-function extractMerchant(typeKeyword: string, descLines: string[]): string {
+interface ParsedDesc {
+  merchant: string;
+  location: string;
+}
+
+/** Convert ALL-CAPS string to Title Case; mixed-case strings are left unchanged. */
+function titleCase(s: string): string {
+  if (!s) return s;
+  const alpha = s.replace(/[^a-zA-Z]/g, '');
+  if (alpha.length > 0 && alpha === alpha.toUpperCase()) {
+    return s.toLowerCase().replace(/\b[a-z]/g, (c) => c.toUpperCase());
+  }
+  return s;
+}
+
+/**
+ * Split "ESSELUNGA SPA VIA TITIAN 30 MI" into
+ *   { merchant: "Esselunga Spa", location: "Via Titian 30 Mi" }.
+ * Recognises common Italian street types as the split point.
+ */
+function splitMerchantLocation(raw: string): ParsedDesc {
+  // First occurrence of a street-type keyword marks the start of the address
+  const m = raw.match(
+    /^(.+?)\s+((?:VIA|VIALE|PIAZZA|P\.ZA|CORSO|C\.SO|CONTRADA|STRADA|LARGO|VICO)\b.*)$/i,
+  );
+  if (m && m[1].trim().length > 0) {
+    return { merchant: titleCase(m[1].trim()), location: titleCase(m[2].trim()) };
+  }
+  // Ends with a 2-letter province code (e.g., "ZARA MI")
+  const cityM = raw.match(/^(.+?)\s+([A-Z]{2})\s*$/);
+  if (cityM && cityM[1].trim().split(/\s+/).length <= 5) {
+    return { merchant: titleCase(cityM[1].trim()), location: cityM[2] };
+  }
+  return { merchant: titleCase(raw.trim()), location: '' };
+}
+
+function parseTransactionDescription(typeKeyword: string, descLines: string[]): ParsedDesc {
   const type = typeKeyword.trim();
   const desc = descLines.join(' ').replace(/\s{2,}/g, ' ').trim();
+  const first = descLines[0]?.trim() ?? '';
 
+  // ── Pagamento Tramite POS / Storno Pagamento Pos ──────────────────────────
+  // Format: "MERCHANT [ADDR] DD/MM-HH:MM - Carta n. XXXXXXX"
+  if (/^(?:Pagamento Tramite POS|Storno Pagamento Pos)/i.test(type)) {
+    const joined = desc
+      .replace(/\s*-\s*Carta\s+n\..*$/i, '')
+      .replace(/\s+\d{2}\/\d{2}-\d{2}:\d{2}.*$/, '')
+      .trim();
+    if (joined.length > 0) return splitMerchantLocation(joined);
+    return { merchant: titleCase(first.slice(0, 50)), location: '' };
+  }
+
+  // ── Pagamento POS / POS estero (EFFETTUATO IL ... PRESSO ...) ─────────────
   if (/^Pagamento POS$/i.test(type) || /^Pagamento effettuato su POS estero/i.test(type)) {
-    const m = desc.match(/PRESSO\s+([A-Z0-9 .*/'&,-]{3,50?}?)(?:\s{3,}|$)/);
-    if (m) return clean(m[1]);
-    const m2 = desc.match(/PRESSO\s+([^\n]{3,40})/);
-    if (m2) return clean(m2[1].replace(/\s+[A-Z]{1,3}$/, ''));
+    const pressoM = desc.match(/PRESSO\s+(.+)/i);
+    if (pressoM) {
+      const afterPresso = pressoM[1]
+        .replace(/\s+\d{2}\/\d{2}\/\d{4}.*$/, '')
+        .trim();
+      // City is often separated by 3+ spaces after merchant name
+      const parts = afterPresso.split(/\s{3,}/);
+      if (parts.length >= 2) {
+        return {
+          merchant: titleCase(parts[0].trim()),
+          location: titleCase(parts.slice(1).join(' ').trim()),
+        };
+      }
+      return splitMerchantLocation(afterPresso);
+    }
   }
 
-  if (/^Pagamento Tramite POS/i.test(type)) {
-    const first = descLines[0] ?? '';
-    return clean(
-      first
-        .replace(/\s+[A-Z]{2,5}\d{2}\/\d{2}-\d{2}:\d{2}.*$/, '')
-        .replace(/\s+\d{2}\/\d{2}-\d{2}:\d{2}.*$/, '')
-        .replace(/\s+(VIA|VIALE|PIAZZA|PIAZZ|CORSO|LOC\.|S\.P\.)\b.*/i, '')
-        .replace(/\s+-\s*$/, ''),
-    );
-  }
-
+  // ── Pagamento BANCOMAT PAY ─────────────────────────────────────────────────
   if (/^Pagamento BANCOMAT PAY/i.test(type)) {
-    const m = desc.match(/presso\s+(.+?)\s+data:/i);
-    if (m) return clean(m[1]);
-    const m2 = (descLines[0] ?? '').match(/presso\s+(.+)/i);
-    if (m2) return clean(m2[1]);
+    const m = desc.match(/presso\s+(.+?)\s+data:/i) ?? desc.match(/presso\s+(.+)/i);
+    if (m) return { merchant: titleCase(m[1].trim().slice(0, 50)), location: '' };
   }
 
+  // ── Pagamento ADUE ────────────────────────────────────────────────────────
   if (/^Pagamento ADUE/i.test(type)) {
     const m = desc.match(/NOME:\s*(.+?)\s+MANDATO:/i) ?? desc.match(/NOME:\s*(.+)/i);
-    if (m) return clean(m[1].slice(0, 40));
+    if (m) return { merchant: titleCase(m[1].trim().slice(0, 40)), location: '' };
   }
 
+  // ── Trasferimento denaro BANCOMAT Pay ─────────────────────────────────────
+  if (/^Trasferimento denaro BANCOMAT Pay/i.test(type)) {
+    const m =
+      desc.match(/(?:Da|Verso)\s+(.+?)\s+data:/i) ??
+      desc.match(/(?:Da|Verso)\s+(.+)/i);
+    if (m) return { merchant: titleCase(m[1].trim().slice(0, 50)), location: '' };
+  }
+
+  // ── Bonifico da Voi disposto a favore di ─────────────────────────────────
   if (/^Bonifico da Voi disposto a favore di:/i.test(type)) {
     const afterColon = type.replace(/^Bonifico da Voi disposto a favore di:\s*/i, '').trim();
     const candidate = afterColon.length > 1
-      ? (afterColon + ' ' + (descLines[0] ?? '')).trim()
-      : (descLines[0] ?? '');
-    return clean(candidate.replace(/\s+[A-Z0-9]{10,}.*$/, '').slice(0, 50));
+      ? (afterColon + ' ' + first).trim()
+      : first;
+    const mer = titleCase(clean(candidate.replace(/\s+[A-Z0-9]{10,}.*$/, '').slice(0, 50)));
+    return { merchant: mer, location: '' };
   }
 
+  // ── Bonifico a Vostro favore ──────────────────────────────────────────────
   if (/^Bonifico a Vostro favore/i.test(type)) {
     const m = desc.match(/MITT\.:\s*(.+?)(?:\s+COD\.DISP\.|$)/i);
-    if (m) return clean(m[1].slice(0, 50));
-    const first = descLines[0] ?? '';
-    if (first && !/^COD\.DISP/i.test(first)) return clean(first.slice(0, 50));
+    if (m) return { merchant: titleCase(m[1].trim().slice(0, 50)), location: '' };
+    if (first && !/^COD\.DISP/i.test(first)) {
+      return { merchant: titleCase(first.slice(0, 50)), location: '' };
+    }
   }
 
-  if (/^Trasferimento denaro BANCOMAT Pay/i.test(type)) {
-    const first = descLines[0] ?? '';
-    const m = (desc + first).match(/^Da\s+(.+?)\s+data:/i);
-    if (m) return clean(m[1]);
-  }
+  // ── Accredito ─────────────────────────────────────────────────────────────
+  if (/^Accredito/i.test(type)) return { merchant: 'Accredito', location: '' };
 
-  if (/^Accredito/i.test(type)) return 'Accredito';
-
-  return clean(type.slice(0, 50));
+  // ── Fallback ──────────────────────────────────────────────────────────────
+  return { merchant: titleCase(clean(type.slice(0, 50))), location: '' };
 }
 
 function isTransferType(typeKeyword: string, descLines: string[]): boolean {
@@ -301,11 +387,12 @@ function parseItalianPDF(
 
     const amount = pending.amount * pending.sign;
 
-    // Extract merchant — bank-specific or generic
-    let merchant = extractMerchant(pending.typeKeyword, pending.descLines);
-    if (!merchant) {
-      merchant = pending.descLines[0]?.trim().slice(0, 60) ?? pending.typeKeyword.slice(0, 50);
-    }
+    const parsed = parseTransactionDescription(pending.typeKeyword, pending.descLines);
+    const merchant =
+      parsed.merchant ||
+      pending.descLines[0]?.trim().slice(0, 60) ||
+      pending.typeKeyword.slice(0, 50);
+    const location = parsed.location || undefined;
     const description = merchant || 'Transazione';
 
     let category = categorize(description);
@@ -319,7 +406,11 @@ function parseItalianPDF(
       // Keep categorize() decision (likely 'other' or income)
     }
 
-    transactions.push({ date, amount, description, merchant, category, note: '' });
+    const tx: Omit<import('../types').Transaction, 'id'> = {
+      date, amount, description, merchant, category, note: '',
+    };
+    if (location) tx.location = location;
+    transactions.push(tx);
     pending = null;
   };
 
@@ -445,11 +536,25 @@ function extractDates(row: PDFItem[]): { d1: string; d2: string } | null {
 // ── Public API ────────────────────────────────────────────────────────────────
 
 export async function parsePDF(uri: string): Promise<ParseResult> {
-  const { pages, widths } = await extractPDFItems(uri);
+  console.log('[parsePDF] start, uri:', uri);
+  let pages: PDFItem[][];
+  let widths: number[];
+  try {
+    const extracted = await extractPDFItems(uri);
+    pages = extracted.pages;
+    widths = extracted.widths;
+    console.log('[parsePDF] extracted pages:', pages.length);
+  } catch (e) {
+    console.error('[parsePDF] extractPDFItems failed:', e);
+    throw e;
+  }
 
   const fullText = pages.flatMap((p) => p.map((it) => it.str)).join(' ');
   const bank = detectBank(fullText);
   const bankName = BANK_LABELS[bank];
+  console.log('[parsePDF] bank detected:', bankName);
 
-  return parseItalianPDF(pages, widths, bankName);
+  const result = parseItalianPDF(pages, widths, bankName);
+  console.log('[parsePDF] done, txs:', result.transactions.length);
+  return result;
 }

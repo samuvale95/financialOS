@@ -33,6 +33,7 @@ import { searchLocalAssets, looksLikeTicker } from '../constants/popularAssets';
 import type { LocalAsset } from '../constants/popularAssets';
 import { parseCSV } from '../utils/parsers';
 import { parseExcel } from '../utils/excelParser';
+import { parsePDF } from '../utils/pdfParser';
 import { ITALIAN_BANKS } from '../constants/italianBanks';
 import type { ItalianBank } from '../constants/italianBanks';
 import { CATEGORIES, EXPENSE_CATEGORIES } from '../constants/categories';
@@ -943,7 +944,9 @@ export default function OnboardingScreen() {
       const name = (asset.name ?? '').toLowerCase();
 
       let result;
-      if (name.endsWith('.csv') || name.endsWith('.txt')) {
+      if (name.endsWith('.pdf')) {
+        result = await parsePDF(asset.uri);
+      } else if (name.endsWith('.csv') || name.endsWith('.txt')) {
         result = parseCSV(await FileSystem.readAsStringAsync(asset.uri));
       } else {
         result = await parseExcel(asset.uri);
@@ -962,7 +965,7 @@ export default function OnboardingScreen() {
       };
       setState(s => ({ ...s, importedFiles: [...s.importedFiles, newFile] }));
     } catch {
-      Alert.alert('Errore', 'Impossibile leggere il file. Verifica che sia un foglio di calcolo valido (.xlsx, .csv).');
+      Alert.alert('Errore', 'Impossibile leggere il file. Verifica che sia un estratto conto valido (.pdf, .xlsx, .csv).');
     } finally {
       setImporting(false);
     }

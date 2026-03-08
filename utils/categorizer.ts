@@ -1,4 +1,5 @@
 import type { CategoryId } from '../constants/categories';
+import type { Transaction } from '../types';
 
 // More specific rules must come before catch-all ones for the same domain
 const RULES: [CategoryId, string[]][] = [
@@ -186,6 +187,144 @@ export function getTaxInfo(
     return { isTaxRelevant: true, taxCategory: 'education' };
   }
   return { isTaxRelevant: false };
+}
+
+// ── Fuzzy similarity ─────────────────────────────────────────────────────────
+
+/** Payment intermediaries that wrap the real merchant name after a '*' */
+const INTERMEDIARY_RE = /^(?:paypal|stripe|sumup|square|nexi|mypos|zettle|izettle|worldline|adyen)\s*[*]\s*/i;
+
+/** Legal-form suffixes to strip (SPA, SRL, LTD, …) */
+const LEGAL_RE = /\b(s\.?p\.?a\.?|s\.?r\.?l\.?|s\.?a\.?s\.?|s\.?n\.?c\.?|sarl|ltd|gmbh|inc\.?|srls|scarl|scrl|llc|corp\.?|ag|bv|nv|se|plc)\b\.?/gi;
+
+/** Location words that start an address suffix — everything from here on is stripped */
+const LOCATION_RE = /\b(via|viale|v\.le|piazza|p\.zza|pza|corso|c\.so|largo|vicolo|strada|str\.|borgata|loc\.|fraz\.|localita|galleria)\b.*/i;
+
+/** Internet domain suffixes attached to brand names (e.g. netflix.com → netflix) */
+const DOMAIN_SUFFIX_RE = /\.(com|it|eu|net|org|io|co|uk|us|fr|de|es)\b/gi;
+
+/** URL path components like /bill, /store, /pay */
+const URL_PATH_RE = /\/\S*/g;
+
+/** Extra payment-type prefixes that getMerchantKey may not fully strip */
+const EXTRA_PREFIX_RE = /^(adue\s+|bancomat\s+pay\s*[-–]\s*|pos\s+\*?\s*\d*\s*)/i;
+
+/**
+ * Extracts the meaningful brand name from a transaction.
+ *
+ * Examples:
+ *   "ESSELUNGA SPA VIA ROMA 156 MILANO"    → "esselunga"
+ *   "PAYPAL *SPOTIFY"                       → "spotify"
+ *   "NETFLIX.COM"                           → "netflix"
+ *   "AMAZON MARKETPLACE EU SARL"            → "amazon marketplace"
+ *   "MCDONALD'S PIAZZA DEL DUOMO"          → "mcdonalds"
+ */
+export function extractBrand(tx: Pick<Transaction, 'merchant' | 'description'>): string {
+  let s = getMerchantKey(tx);
+
+  // Unwrap payment intermediaries (PayPal *, Stripe *, …)
+  const intm = s.match(INTERMEDIARY_RE);
+  if (intm) s = s.slice(intm[0].length).trim();
+
+  s = s
+    .replace(DOMAIN_SUFFIX_RE, '')    // strip .com, .it, …
+    .replace(URL_PATH_RE, '')          // strip /bill, /store, …
+    .replace(LOCATION_RE, '')          // strip address suffix
+    .replace(LEGAL_RE, '')             // strip SPA, SRL, …
+    .replace(EXTRA_PREFIX_RE, '')      // strip ADUE, POS *, …
+    .replace(/[''`]/g, '')             // normalize apostrophes → mcdonalds
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const tokens = s.split(/\s+/).filter(t => t.length > 1 && !/^\d+$/.test(t));
+  return tokens.slice(0, 2).join(' ').toLowerCase();
+}
+
+/** Minimal Levenshtein distance (for short strings only — O(n·m)). */
+function levenshtein(a: string, b: string): number {
+  if (a === b) return 0;
+  if (!a.length) return b.length;
+  if (!b.length) return a.length;
+  const dp = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    let prev = i;
+    for (let j = 1; j <= b.length; j++) {
+      const val = dp[j - 1] + (a[i - 1] !== b[j - 1] ? 1 : 0);
+      dp[j - 1] = prev;
+      prev = Math.min(dp[j] + 1, prev + 1, val);
+    }
+    dp[b.length] = prev;
+  }
+  return dp[b.length];
+}
+
+/**
+ * Returns a 0–1 similarity score between two transactions.
+ * Uses brand extraction + prefix matching + Levenshtein for fuzzy matching.
+ */
+export function computeSimilarity(
+  a: Pick<Transaction, 'merchant' | 'description'>,
+  b: Pick<Transaction, 'merchant' | 'description'>,
+): number {
+  // Exact merchant key → perfect match
+  if (getMerchantKey(a) === getMerchantKey(b)) return 1.0;
+
+  const brandA = extractBrand(a);
+  const brandB = extractBrand(b);
+
+  if (!brandA || !brandB || brandA.length < 3 || brandB.length < 3) return 0;
+
+  // Exact brand (up to 2 tokens) match
+  if (brandA === brandB) return 0.95;
+
+  const fa = brandA.split(' ')[0]; // most significant token
+  const fb = brandB.split(' ')[0];
+
+  if (fa.length < 3 || fb.length < 3) return 0;
+
+  // Exact first token
+  if (fa === fb) return 0.85;
+
+  if (fa.length >= 4 && fb.length >= 4) {
+    // Prefix: one starts with the other (amazon vs amazon marketplace)
+    if (fa.startsWith(fb) || fb.startsWith(fa)) return 0.82;
+
+    // Substring: significant overlap
+    if (fa.includes(fb) || fb.includes(fa)) {
+      const ratio = Math.min(fa.length, fb.length) / Math.max(fa.length, fb.length);
+      if (ratio >= 0.65) return 0.78;
+    }
+
+    // Levenshtein for typos / apostrophes (mcdonald's vs mcdonalds)
+    if (fa.length >= 5 && fb.length >= 5) {
+      const dist = levenshtein(fa, fb);
+      const maxLen = Math.max(fa.length, fb.length);
+      if (dist === 1) return 0.80;
+      if (dist === 2 && maxLen >= 8) return 0.72;
+    }
+  }
+
+  return 0;
+}
+
+/**
+ * Returns all transactions similar to `source`, sorted by descending similarity.
+ * Searches across ALL months, all time periods.
+ * Only considers expenses (amount < 0) and excludes transfers.
+ *
+ * Default threshold 0.75 = catches brand-level matches while avoiding false positives.
+ */
+export function findSimilarTransactions(
+  source: Transaction,
+  all: Transaction[],
+  threshold = 0.75,
+): Transaction[] {
+  return all
+    .filter(tx => tx.id !== source.id && tx.amount < 0 && tx.category !== 'transfer')
+    .map(tx => ({ tx, score: computeSimilarity(source, tx) }))
+    .filter(({ score }) => score >= threshold)
+    .sort((a, b) => b.score - a.score || new Date(b.tx.date).getTime() - new Date(a.tx.date).getTime())
+    .map(({ tx }) => tx);
 }
 
 /**
