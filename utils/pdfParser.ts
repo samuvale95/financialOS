@@ -535,6 +535,25 @@ function extractDates(row: PDFItem[]): { d1: string; d2: string } | null {
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
+/**
+ * Extract raw text from a PDF, preserving row structure.
+ * Items on the same horizontal row are joined with spaces;
+ * rows are separated by newlines. Used by Gemini parser to avoid
+ * sending the full binary (≈50× cheaper than inline_data base64).
+ */
+export async function extractTextFromPDF(uri: string): Promise<string> {
+  const { pages } = await extractPDFItems(uri);
+  return pages
+    .map((pageItems) => {
+      const rowMap = groupIntoRows(pageItems);
+      return sortedRows(rowMap)
+        .map(([, row]) => row.map((it) => it.str).join(' ').trim())
+        .filter((line) => line.length > 0)
+        .join('\n');
+    })
+    .join('\n--- PAGINA ---\n');
+}
+
 export async function parsePDF(uri: string): Promise<ParseResult> {
   console.log('[parsePDF] start, uri:', uri);
   let pages: PDFItem[][];

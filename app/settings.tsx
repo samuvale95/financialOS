@@ -15,7 +15,9 @@ import { router } from 'expo-router';
 import { Colors, Typography, Radius, Spacing } from '../constants/theme';
 import { useSettings } from '../contexts/SettingsContext';
 import { hasGemini } from '../utils/geminiParser';
+import { hasOpenAI } from '../utils/openaiParser';
 import { useData } from '../contexts/DataContext';
+import { clearParserCache, getCacheStats } from '../utils/aiParserCache';
 import { ITALIAN_BANKS } from '../constants/italianBanks';
 import type { ItalianBank } from '../constants/italianBanks';
 import type { BankAccount, FiscalType } from '../types';
@@ -498,15 +500,40 @@ export default function SettingsScreen() {
             value={settings.import.manual}
             onToggle={(v) => updateSetting('import', 'manual', v)}
           />
-          {hasGemini && (
+          {(hasOpenAI || hasGemini) && (
             <>
               <View style={styles.separator} />
               <SettingRow
-                label="Gemini AI Parsing"
-                description="Usa Gemini 2.0 Flash per leggere e classificare i file"
+                label="AI Parsing"
+                description="Usa l'AI per leggere e classificare i file importati"
                 value={settings.import.geminiParsing}
                 onToggle={(v) => updateSetting('import', 'geminiParsing', v)}
               />
+              {settings.import.geminiParsing && hasOpenAI && hasGemini && (
+                <View style={styles.aiProviderRow}>
+                  <Text style={styles.aiProviderLabel}>Modello</Text>
+                  <View style={styles.aiProviderPills}>
+                    {([
+                      { id: 'openai', label: 'ChatGPT' },
+                      { id: 'gemini', label: 'Gemini' },
+                    ] as const).map((opt) => {
+                      const active = settings.import.aiProvider === opt.id;
+                      return (
+                        <TouchableOpacity
+                          key={opt.id}
+                          style={[styles.aiProviderPill, active && styles.aiProviderPillActive]}
+                          onPress={() => updateSetting('import', 'aiProvider', opt.id)}
+                          activeOpacity={0.7}
+                        >
+                          <Text style={[styles.aiProviderPillText, active && styles.aiProviderPillTextActive]}>
+                            {opt.label}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                </View>
+              )}
             </>
           )}
         </Section>
@@ -525,6 +552,118 @@ export default function SettingsScreen() {
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>DEVELOPER</Text>
           <View style={styles.card}>
+
+            {/* Strategia di importazione */}
+            <View style={styles.strategyRow}>
+              <View style={styles.rowInfo}>
+                <Text style={styles.rowLabel}>Strategia importazione</Text>
+                <Text style={styles.rowDesc}>
+                  Smart = schema locale + AI solo se necessario · Full AI = sempre AI completa
+                </Text>
+              </View>
+            </View>
+            <View style={styles.strategyPills}>
+              {([
+                { id: 'smart', label: 'Smart', icon: 'flash' },
+                { id: 'full_ai', label: 'Full AI', icon: 'sparkles' },
+              ] as const).map((opt) => {
+                const active = (settings.developer.importStrategy ?? 'smart') === opt.id;
+                return (
+                  <TouchableOpacity
+                    key={opt.id}
+                    style={[styles.strategyPill, active && styles.strategyPillActive]}
+                    onPress={() => updateSetting('developer', 'importStrategy', opt.id)}
+                    activeOpacity={0.7}
+                  >
+                    <Ionicons
+                      name={opt.icon}
+                      size={14}
+                      color={active ? Colors.accent.primary : Colors.text.muted}
+                    />
+                    <Text style={[styles.strategyPillText, active && styles.strategyPillTextActive]}>
+                      {opt.label}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+
+            <View style={styles.separator} />
+
+            <SettingRow
+              label="Usa cache AI"
+              description="Riusa risultati salvati invece di chiamare l'AI (solo per test)"
+              value={settings.developer.useAiCache}
+              onToggle={(v) => updateSetting('developer', 'useAiCache', v)}
+            />
+            <View style={styles.separator} />
+            <TouchableOpacity
+              style={styles.resetRow}
+              onPress={async () => {
+                const stats = await getCacheStats();
+                Alert.alert(
+                  'Cache AI',
+                  stats.count === 0
+                    ? 'La cache è vuota.'
+                    : `${stats.count} file in cache (${stats.sizeKB} KB). Vuoi svuotarla?`,
+                  stats.count === 0
+                    ? [{ text: 'OK' }]
+                    : [
+                        { text: 'Annulla', style: 'cancel' },
+                        {
+                          text: 'Svuota',
+                          style: 'destructive',
+                          onPress: async () => {
+                            await clearParserCache();
+                            Alert.alert('Cache svuotata', 'I risultati salvati sono stati eliminati.');
+                          },
+                        },
+                      ]
+                );
+              }}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="server-outline" size={20} color={Colors.accent.primary} />
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.resetLabel, { color: Colors.text.primary }]}>Gestisci cache AI</Text>
+                <Text style={styles.resetDesc}>Visualizza dimensione e svuota i risultati salvati</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={16} color={Colors.text.muted} />
+            </TouchableOpacity>
+
+            <View style={styles.separator} />
+
+            {/* Analytics link */}
+            <TouchableOpacity
+              style={styles.resetRow}
+              onPress={() => router.push('/import-analytics')}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="bar-chart-outline" size={20} color={Colors.accent.primary} />
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.resetLabel, { color: Colors.text.primary }]}>Analytics importazione</Text>
+                <Text style={styles.resetDesc}>Cronologia, tempi, modelli e risparmio stimato</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={16} color={Colors.text.muted} />
+            </TouchableOpacity>
+
+            <View style={styles.separator} />
+
+            {/* Logs link */}
+            <TouchableOpacity
+              style={styles.resetRow}
+              onPress={() => router.push('/import-logs')}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="receipt-outline" size={20} color={Colors.semantic.warning} />
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.resetLabel, { color: Colors.text.primary }]}>Log importazione</Text>
+                <Text style={styles.resetDesc}>Testo inviato al modello e risposta raw — debug entrate/uscite</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={16} color={Colors.text.muted} />
+            </TouchableOpacity>
+
+            <View style={styles.separator} />
             <TouchableOpacity
               style={styles.resetRow}
               onPress={() =>
@@ -758,6 +897,43 @@ const styles = StyleSheet.create({
     ...Typography.body,
   },
 
+  // Strategy picker
+  strategyRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    paddingTop: 14,
+    paddingBottom: 8,
+  },
+  strategyPills: {
+    flexDirection: 'row',
+    gap: 8,
+    paddingBottom: 14,
+  },
+  strategyPill: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 10,
+    borderRadius: Radius.md,
+    backgroundColor: Colors.bg.elevated,
+    borderWidth: 1,
+    borderColor: Colors.border.default,
+  },
+  strategyPillActive: {
+    backgroundColor: Colors.accent.primary + '18',
+    borderColor: Colors.accent.primary,
+  },
+  strategyPillText: {
+    ...Typography.bodyMedium,
+    color: Colors.text.muted,
+    fontWeight: '600',
+  },
+  strategyPillTextActive: {
+    color: Colors.accent.primary,
+  },
+
   // Developer section
   resetRow: {
     flexDirection: 'row',
@@ -765,6 +941,20 @@ const styles = StyleSheet.create({
     gap: Spacing.sm,
     paddingVertical: 14,
   },
+  aiProviderRow: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: 16, paddingVertical: 10,
+  },
+  aiProviderLabel: { ...Typography.bodyMedium, color: Colors.text.secondary },
+  aiProviderPills: { flexDirection: 'row', gap: 8 },
+  aiProviderPill: {
+    paddingHorizontal: 16, paddingVertical: 6, borderRadius: Radius.full,
+    backgroundColor: Colors.bg.elevated, borderWidth: 1, borderColor: Colors.border.default,
+  },
+  aiProviderPillActive: { backgroundColor: Colors.accent.primary, borderColor: Colors.accent.primary },
+  aiProviderPillText: { ...Typography.bodyMedium, color: Colors.text.secondary, fontWeight: '600' },
+  aiProviderPillTextActive: { color: '#fff' },
+
   resetLabel: {
     ...Typography.bodyMedium,
     color: Colors.semantic.danger,

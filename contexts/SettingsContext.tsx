@@ -18,16 +18,22 @@ export interface AppSettings {
     excel: boolean;
     manual: boolean;
     geminiParsing: boolean;
+    aiProvider: 'openai' | 'gemini';
   };
   preferences: {
     haptics: boolean;
+  };
+  developer: {
+    useAiCache: boolean;
+    importStrategy: 'smart' | 'full_ai';
   };
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
   features: { budgets: true, goals: true, portfolio: true, coach: true },
-  import: { pdf: true, csv: true, excel: true, manual: true, geminiParsing: true },
+  import: { pdf: true, csv: true, excel: true, manual: true, geminiParsing: true, aiProvider: 'openai' },
   preferences: { haptics: true },
+  developer: { useAiCache: false, importStrategy: 'smart' },
 };
 
 interface SettingsContextValue {
@@ -55,6 +61,7 @@ async function loadSettings(): Promise<AppSettings> {
       features: { ...DEFAULT_SETTINGS.features, ...(parsed.features ?? {}) },
       import: { ...DEFAULT_SETTINGS.import, ...(parsed.import ?? {}) },
       preferences: { ...DEFAULT_SETTINGS.preferences, ...(parsed.preferences ?? {}) },
+      developer: { ...DEFAULT_SETTINGS.developer, ...(parsed.developer ?? {}) },
     };
   } catch {
     return DEFAULT_SETTINGS;

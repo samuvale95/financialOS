@@ -5,6 +5,10 @@ export interface ParseResult {
   transactions: Omit<Transaction, 'id'>[];
   bankName: string;
   skipped: number;
+  /** Schema di parsing estratto dall'AI (solo primo import per banca CSV/XLSX). */
+  parsingSchema?: import('./bankSchemaStore').BankParsingSchema;
+  /** Tier raggiunto dal smart parser — impostato da parseWithSmartParser. */
+  _tier?: 'L1_cache' | 'L2_schema' | 'L3_full_ai';
 }
 
 type BankType = 'isybank' | 'intesa' | 'unicredit' | 'revolut' | 'n26' | 'generic';

@@ -1,42 +1,61 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   TouchableOpacity,
   ScrollView,
-  Alert,
   ActivityIndicator,
   TextInput,
+  Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { router } from 'expo-router';
 import * as DocumentPicker from 'expo-document-picker';
-import * as FileSystem from 'expo-file-system/legacy';
 import { Colors, Typography, Radius, Shadow, Gradients, Spacing } from '../../constants/theme';
 import { Button } from '../../components/ui/Button';
 import { useSettings } from '../../contexts/SettingsContext';
 import { useData } from '../../contexts/DataContext';
-import { parseCSV, type ParseResult } from '../../utils/parsers';
-import { parseExcel } from '../../utils/excelParser';
-import { parsePDF } from '../../utils/pdfParser';
 import { parseWithGemini, hasGemini } from '../../utils/geminiParser';
+import { parseWithOpenAI, hasOpenAI } from '../../utils/openaiParser';
+import { getCachedResult, setCachedResult } from '../../utils/aiParserCache';
+import { parseWithSmartParser } from '../../utils/smartImportParser';
+import { logImportEvent } from '../../utils/importAnalytics';
+import type { ImportModel, ImportTier, ImportStrategy } from '../../utils/importAnalytics';
+import { startLogSession, finishLogSession } from '../../utils/importLogger';
 import type { Transaction } from '../../types';
+import type { ParseResult } from '../../utils/parsers';
 
-type ImportPhase = 'idle' | 'picking' | 'parsing' | 'preview' | 'importing' | 'done' | 'error';
-
-interface PreviewState {
-  result: ParseResult;
-  importedCount?: number;
-}
+type ImportPhase = 'idle' | 'queue' | 'background' | 'done' | 'error';
 
 export default function ImportaScreen() {
   const { settings } = useSettings();
-  const { addTransactions, accounts, updateAccount, transactions, goals, addGoal } = useData();
+  const aiEnabled = settings.import.geminiParsing && (hasOpenAI || hasGemini);
+
+  const getParseFn = () => {
+    if (settings.import.aiProvider === 'openai' && hasOpenAI) return parseWithOpenAI;
+    if (hasGemini) return parseWithGemini;
+    return parseWithOpenAI;
+  };
+
+  // Stores fresh AI results (not from cache) for the save-to-cache prompt
+  const freshAiResultsRef = useRef<Map<string, ParseResult>>(new Map());
+
+  const {
+    importJobs,
+    enqueueImport,
+    clearImportJobs,
+    accounts,
+    updateAccount,
+    transactions,
+    goals,
+    addGoal,
+  } = useData();
+
   const [phase, setPhase] = useState<ImportPhase>('idle');
-  const [preview, setPreview] = useState<PreviewState | null>(null);
+  const [queuedFiles, setQueuedFiles] = useState<{ uri: string; name: string }[]>([]);
   const [errorMsg, setErrorMsg] = useState('');
   const [balanceUpdated, setBalanceUpdated] = useState(false);
   const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null);
@@ -52,119 +71,136 @@ export default function ImportaScreen() {
     return Math.round(total / months.size);
   }, [transactions]);
 
-  const handleCSV = async () => {
-    setPhase('picking');
-    try {
-      const picked = await DocumentPicker.getDocumentAsync({
-        type: ['text/csv', 'text/plain', 'text/comma-separated-values'],
-        copyToCacheDirectory: true,
-      });
-      if (picked.canceled || !picked.assets?.[0]) { setPhase('idle'); return; }
-      const asset = picked.assets[0];
-      setPhase('parsing');
-      console.log('[Import CSV] hasGemini:', hasGemini, '| geminiParsing:', settings.import.geminiParsing, '| file:', asset.name);
-      let result: ParseResult;
-      if (hasGemini && settings.import.geminiParsing) {
-        result = await parseWithGemini(asset.uri, asset.name ?? 'file.csv');
-      } else {
-        const content = await FileSystem.readAsStringAsync(asset.uri, {
-          encoding: FileSystem.EncodingType.UTF8,
-        });
-        result = parseCSV(content);
-      }
-      if (result.transactions.length === 0) {
-        setErrorMsg('Nessuna transazione valida trovata nel file CSV.');
-        setPhase('error');
-        return;
-      }
-      setPreview({ result });
-      setPhase('preview');
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setErrorMsg(`Errore: ${msg}`);
-      setPhase('error');
-    }
-  };
+  // Transition to done when all enqueued jobs have settled
+  useEffect(() => {
+    if (phase !== 'background' || importJobs.length === 0) return;
+    const allSettled = importJobs.every(j => j.status === 'done' || j.status === 'error');
+    if (!allSettled) return;
 
-  const handleExcel = async () => {
-    setPhase('picking');
+    setPhase('done');
+
+    // Offer to save fresh AI results to cache (only when not already auto-saved)
+    const fresh = freshAiResultsRef.current;
+    if (fresh.size > 0) {
+      Alert.alert(
+        'Salva in cache?',
+        `${fresh.size} file elaborati dall'AI. Vuoi salvare i risultati per riutilizzarli nei test futuri?`,
+        [
+          { text: 'No', style: 'cancel' },
+          {
+            text: 'Salva',
+            onPress: async () => {
+              for (const [name, result] of fresh) {
+                await setCachedResult(name, result);
+              }
+              fresh.clear();
+            },
+          },
+        ]
+      );
+    }
+  }, [importJobs, phase, settings.developer?.useAiCache]);
+
+  const handlePickFiles = async () => {
     try {
       const picked = await DocumentPicker.getDocumentAsync({
-        // '*/*' è necessario su iOS: file da Google Drive, iCloud e altre app
-        // arrivano spesso come application/octet-stream e verrebbero filtrati via
-        // con MIME type specifici. Rileviamo il formato dall'estensione dopo il pick.
         type: ['*/*'],
         copyToCacheDirectory: true,
+        multiple: true,
       });
-      if (picked.canceled || !picked.assets?.[0]) { setPhase('idle'); return; }
-      const asset = picked.assets[0];
-      const name = (asset.name ?? '').toLowerCase();
-      setPhase('parsing');
-      console.log('[Import Excel] hasGemini:', hasGemini, '| geminiParsing:', settings.import.geminiParsing, '| file:', asset.name);
-      let result: ParseResult;
-      if (hasGemini && settings.import.geminiParsing) {
-        result = await parseWithGemini(asset.uri, asset.name ?? 'file.xlsx');
-      } else if (name.endsWith('.csv') || name.endsWith('.txt')) {
-        const content = await FileSystem.readAsStringAsync(asset.uri, {
-          encoding: FileSystem.EncodingType.UTF8,
-        });
-        result = parseCSV(content);
-      } else {
-        // .xlsx, .xls, .ods, .numbers o binario generico da Google Sheets
-        result = await parseExcel(asset.uri);
-      }
-
-      if (result.transactions.length === 0) {
-        setErrorMsg('Nessuna transazione valida trovata nel file. Verifica che contenga colonne di data, importo e descrizione.');
-        setPhase('error');
-        return;
-      }
-      setPreview({ result });
-      setPhase('preview');
+      if (picked.canceled || !picked.assets?.length) return;
+      const files = picked.assets.map(a => ({ uri: a.uri, name: a.name ?? 'file' }));
+      setQueuedFiles(prev => [...prev, ...files]);
+      setPhase('queue');
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      setErrorMsg(`Errore: ${msg}`);
+      setErrorMsg(`Errore selezione file: ${msg}`);
       setPhase('error');
     }
   };
 
-  const handlePDF = async () => {
-    setPhase('picking');
-    try {
-      const picked = await DocumentPicker.getDocumentAsync({
-        type: ['application/pdf'],
-        copyToCacheDirectory: true,
-      });
-      if (picked.canceled || !picked.assets?.[0]) { setPhase('idle'); return; }
-      const asset = picked.assets[0];
-      setPhase('parsing');
-      console.log('[Import PDF] hasGemini:', hasGemini, '| geminiParsing:', settings.import.geminiParsing, '| file:', asset.name);
-      let result: ParseResult;
-      if (hasGemini && settings.import.geminiParsing) {
-        result = await parseWithGemini(asset.uri, asset.name ?? 'file.pdf');
-      } else {
-        result = await parsePDF(asset.uri);
-      }
-      if (result.transactions.length === 0) {
-        setErrorMsg('Nessuna transazione trovata nel PDF. Verifica che sia un estratto conto valido.');
-        setPhase('error');
-        return;
-      }
-      setPreview({ result });
-      setPhase('preview');
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setErrorMsg(`Errore: ${msg}`);
+  const handleStartProcessing = () => {
+    if (queuedFiles.length === 0) return;
+    if (!aiEnabled) {
+      setErrorMsg('Configura una API key OpenAI o Gemini nelle impostazioni per usare il parser AI.');
       setPhase('error');
+      return;
     }
-  };
 
-  const handleConfirmImport = async () => {
-    if (!preview) return;
-    setPhase('importing');
-    const added = addTransactions(preview.result.transactions as Omit<Transaction, 'id'>[]);
-    setPreview((prev) => prev ? { ...prev, importedCount: added } : null);
-    setPhase('done');
+    freshAiResultsRef.current.clear();
+    const baseParser = getParseFn();
+    const useCache = settings.developer?.useAiCache ?? false;
+    const importStrategy = (settings.developer?.importStrategy ?? 'smart') as ImportStrategy;
+    const provider = settings.import.aiProvider;
+
+    const parseFn = async (uri: string, name: string): Promise<ParseResult> => {
+      const t0 = Date.now();
+      const logModel = provider === 'openai' ? 'gpt-4o-mini' : 'gemini-2.5-flash';
+      startLogSession(name, logModel, importStrategy);
+
+      let result: ParseResult;
+
+      try {
+        if (importStrategy === 'smart') {
+          result = await parseWithSmartParser(uri, name, {
+            useCache,
+            provider,
+            fullAIParser: baseParser,
+            onSchemaLearned: (bankName) =>
+              console.log('[Import] nuovo schema salvato per:', bankName),
+          });
+          // For smart: collect for cache-save prompt only if L3 and auto-cache is off
+          if (result._tier === 'L3_full_ai' && !useCache) {
+            freshAiResultsRef.current.set(name, result);
+          }
+        } else {
+          // Full AI strategy: always call the full AI, no schema learning
+          if (useCache) {
+            const cached = await getCachedResult(name);
+            if (cached) {
+              console.log('[Cache] hit:', name);
+              result = { ...cached, _tier: 'L1_cache' as const };
+            } else {
+              console.log('[Cache] miss:', name, '— chiamo AI');
+              const raw = await baseParser(uri, name);
+              result = { ...raw, _tier: 'L3_full_ai' as const };
+              freshAiResultsRef.current.set(name, result);
+            }
+          } else {
+            const raw = await baseParser(uri, name);
+            result = { ...raw, _tier: 'L3_full_ai' as const };
+            freshAiResultsRef.current.set(name, result);
+          }
+        }
+      } catch (err) {
+        const elapsed = Date.now() - t0;
+        const errMsg = err instanceof Error ? err.message : String(err);
+        await finishLogSession([], elapsed, undefined, errMsg);
+        throw err;
+      }
+
+      const elapsed = Date.now() - t0;
+      const tier: ImportTier = result._tier ?? 'L3_full_ai';
+      const model: ImportModel = tier === 'L1_cache' ? 'none' : provider;
+
+      await finishLogSession(result.transactions, elapsed, tier);
+
+      logImportEvent({
+        fileName: name,
+        strategy: importStrategy,
+        tier,
+        model,
+        processingTimeMs: elapsed,
+        transactionsExtracted: result.transactions.length,
+        bankName: result.bankName,
+      }).catch(() => {});
+
+      return result;
+    };
+
+    clearImportJobs();
+    enqueueImport(queuedFiles, parseFn);
+    setPhase('background');
   };
 
   const handleGoHome = () => {
@@ -174,13 +210,14 @@ export default function ImportaScreen() {
 
   const handleReset = () => {
     setPhase('idle');
-    setPreview(null);
+    setQueuedFiles([]);
     setErrorMsg('');
     setBalanceUpdated(false);
     setSelectedAccountId(null);
     setNewBalance('');
     setEmergencyDone(false);
     setEmergencyMonths(3);
+    clearImportJobs();
   };
 
   const handleUpdateBalance = () => {
@@ -192,23 +229,61 @@ export default function ImportaScreen() {
     setBalanceUpdated(true);
   };
 
-  // ── Phases UI ──────────────────────────────────────────────────────────────
+  const totalAdded = importJobs.reduce((s, j) => s + (j.addedCount ?? 0), 0);
+  const errorJobs = importJobs.filter(j => j.status === 'error');
 
-  if (phase === 'picking' || phase === 'parsing') {
+  // ── Phase: background processing ──────────────────────────────────────────
+
+  if (phase === 'background') {
+    const doneCount = importJobs.filter(j => j.status === 'done' || j.status === 'error').length;
+    const totalCount = importJobs.length;
+    const currentJob = importJobs.find(j => j.status === 'processing');
+
     return (
       <SafeAreaView style={styles.safe} edges={['top']}>
         <View style={styles.centered}>
           <ActivityIndicator size="large" color={Colors.accent.primary} />
-          <Text style={styles.loadingText}>
-            {phase === 'picking' ? 'Selezione file…' : (hasGemini && settings.import.geminiParsing) ? 'Gemini AI in analisi…' : 'Analisi in corso…'}
+          <Text style={styles.loadingTitle}>Elaborazione in corso</Text>
+          <Text style={styles.loadingSubText}>
+            {currentJob ? `${currentJob.fileName}` : 'Preparazione…'}
           </Text>
-          {phase === 'parsing' && hasGemini && settings.import.geminiParsing ? (
-            <Text style={styles.loadingSubText}>Lettura e classificazione con Gemini 2.0 Flash</Text>
-          ) : null}
+          <Text style={styles.progressText}>{doneCount}/{totalCount} file</Text>
+
+          <View style={styles.warningBox}>
+            <Ionicons name="information-circle-outline" size={18} color={Colors.semantic.warning} />
+            <Text style={styles.warningText}>
+              Non chiudere l'app. Riceverai una notifica al termine.
+            </Text>
+          </View>
+
+          <View style={styles.jobsList}>
+            {importJobs.map(job => (
+              <View key={job.id} style={styles.jobRow}>
+                {job.status === 'done' && (
+                  <Ionicons name="checkmark-circle" size={16} color={Colors.semantic.success} />
+                )}
+                {job.status === 'error' && (
+                  <Ionicons name="close-circle" size={16} color={Colors.semantic.danger} />
+                )}
+                {job.status === 'processing' && (
+                  <ActivityIndicator size="small" color={Colors.accent.primary} />
+                )}
+                {job.status === 'pending' && (
+                  <Ionicons name="ellipse-outline" size={16} color={Colors.text.muted} />
+                )}
+                <Text style={styles.jobName} numberOfLines={1}>{job.fileName}</Text>
+                {job.addedCount !== undefined && (
+                  <Text style={styles.jobCount}>{job.addedCount} tx</Text>
+                )}
+              </View>
+            ))}
+          </View>
         </View>
       </SafeAreaView>
     );
   }
+
+  // ── Phase: error ──────────────────────────────────────────────────────────
 
   if (phase === 'error') {
     return (
@@ -223,9 +298,9 @@ export default function ImportaScreen() {
     );
   }
 
-  if (phase === 'preview' && preview) {
-    const { result } = preview;
-    const sample = result.transactions.slice(0, 3);
+  // ── Phase: queue ──────────────────────────────────────────────────────────
+
+  if (phase === 'queue') {
     return (
       <SafeAreaView style={styles.safe} edges={['top']}>
         <ScrollView
@@ -233,52 +308,58 @@ export default function ImportaScreen() {
           contentContainerStyle={styles.content}
           showsVerticalScrollIndicator={false}
         >
-          <Text style={styles.title}>Anteprima</Text>
-
-          <View style={styles.bankChip}>
-            <Ionicons name="business-outline" size={14} color={Colors.accent.primary} />
-            <Text style={styles.bankChipText}>Rilevato: {result.bankName}</Text>
+          <View style={styles.header}>
+            <Text style={styles.title}>File selezionati</Text>
+            <Text style={styles.subtitle}>{queuedFiles.length} {queuedFiles.length === 1 ? 'file pronto' : 'file pronti'} per l'elaborazione</Text>
           </View>
 
-          <View style={styles.previewCard}>
-            <Text style={styles.previewCount}>
-              {result.transactions.length} transazioni trovate
-            </Text>
-            {result.skipped > 0 && (
-              <Text style={styles.previewSkipped}>
-                {result.skipped} {result.skipped === 1 ? 'riga non valida ignorata' : 'righe non valide ignorate'}
-              </Text>
-            )}
-          </View>
-
-          <View style={styles.sampleCard}>
-            <Text style={styles.sampleTitle}>Prime transazioni</Text>
-            {sample.map((t, i) => (
+          <View style={styles.queueCard}>
+            {queuedFiles.map((f, i) => (
               <View key={i}>
-                <View style={styles.sampleRow}>
-                  <View style={styles.sampleInfo}>
-                    <Text style={styles.sampleDesc} numberOfLines={1}>{t.description}</Text>
-                    <Text style={styles.sampleDate}>{t.date}</Text>
-                  </View>
-                  <Text
-                    style={[
-                      styles.sampleAmount,
-                      { color: t.amount >= 0 ? Colors.semantic.success : Colors.semantic.danger },
-                    ]}
+                <View style={styles.queueRow}>
+                  <Ionicons name={getFileIcon(f.name)} size={20} color={Colors.accent.primary} />
+                  <Text style={styles.queueFileName} numberOfLines={1}>{f.name}</Text>
+                  <TouchableOpacity
+                    onPress={() => {
+                      const next = queuedFiles.filter((_, idx) => idx !== i);
+                      if (next.length === 0) { setPhase('idle'); setQueuedFiles([]); }
+                      else setQueuedFiles(next);
+                    }}
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                   >
-                    {t.amount >= 0 ? '+' : ''}€{Math.abs(t.amount).toFixed(2)}
-                  </Text>
+                    <Ionicons name="close" size={18} color={Colors.text.muted} />
+                  </TouchableOpacity>
                 </View>
-                {i < sample.length - 1 && <View style={styles.divider} />}
+                {i < queuedFiles.length - 1 && <View style={styles.divider} />}
               </View>
             ))}
           </View>
 
-          <View style={styles.previewActions}>
+          <TouchableOpacity style={styles.addMoreBtn} onPress={handlePickFiles} activeOpacity={0.7}>
+            <Ionicons name="add" size={18} color={Colors.accent.primary} />
+            <Text style={styles.addMoreText}>Aggiungi altri file</Text>
+          </TouchableOpacity>
+
+          <View style={styles.aiNote}>
+            <Ionicons
+              name={(settings.developer?.importStrategy ?? 'smart') === 'smart' ? 'flash' : 'sparkles'}
+              size={14}
+              color={Colors.accent.primary}
+            />
+            <Text style={styles.aiNoteText}>
+              {(settings.developer?.importStrategy ?? 'smart') === 'smart'
+                ? 'Smart: schema locale + AI solo se necessario'
+                : settings.import.aiProvider === 'openai' && hasOpenAI
+                  ? 'Full AI: ChatGPT 4o-mini analizzerà ogni file'
+                  : 'Full AI: Gemini 2.5 Flash analizzerà ogni file'}
+            </Text>
+          </View>
+
+          <View style={styles.queueActions}>
             <Button label="Annulla" onPress={handleReset} variant="ghost" />
             <Button
-              label={`Importa ${result.transactions.length} transazioni`}
-              onPress={handleConfirmImport}
+              label={`Processa ${queuedFiles.length} ${queuedFiles.length === 1 ? 'file' : 'file'}`}
+              onPress={handleStartProcessing}
             />
           </View>
 
@@ -288,18 +369,9 @@ export default function ImportaScreen() {
     );
   }
 
-  if (phase === 'importing') {
-    return (
-      <SafeAreaView style={styles.safe} edges={['top']}>
-        <View style={styles.centered}>
-          <ActivityIndicator size="large" color={Colors.accent.primary} />
-          <Text style={styles.loadingText}>Importazione in corso…</Text>
-        </View>
-      </SafeAreaView>
-    );
-  }
+  // ── Phase: done ───────────────────────────────────────────────────────────
 
-  if (phase === 'done' && preview) {
+  if (phase === 'done') {
     return (
       <SafeAreaView style={styles.safe} edges={['top']}>
         <ScrollView contentContainerStyle={styles.centeredScroll}>
@@ -308,32 +380,34 @@ export default function ImportaScreen() {
           </View>
           <Text style={styles.doneTitle}>Importazione completata</Text>
           <Text style={styles.doneBody}>
-            {preview.importedCount ?? 0} transazioni importate con successo.
+            {totalAdded} transazioni importate.
+            {errorJobs.length > 0 && ` ${errorJobs.length} file con errori.`}
           </Text>
+
+          {errorJobs.length > 0 && (
+            <View style={styles.errorJobsCard}>
+              {errorJobs.map(j => (
+                <View key={j.id} style={styles.errorJobRow}>
+                  <Ionicons name="close-circle" size={14} color={Colors.semantic.danger} />
+                  <Text style={styles.errorJobText} numberOfLines={2}>{j.fileName}: {j.error}</Text>
+                </View>
+              ))}
+            </View>
+          )}
 
           {accounts.length > 0 && !balanceUpdated && (
             <View style={styles.balanceCard}>
               <Text style={styles.balanceCardTitle}>Aggiornare il saldo?</Text>
-              <Text style={styles.balanceCardSub}>
-                Seleziona il conto che hai appena importato
-              </Text>
+              <Text style={styles.balanceCardSub}>Seleziona il conto che hai appena importato</Text>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.accountsScroll}>
                 {accounts.map((acc) => (
                   <TouchableOpacity
                     key={acc.id}
-                    style={[
-                      styles.accountChipBtn,
-                      selectedAccountId === acc.id && styles.accountChipBtnSelected,
-                    ]}
+                    style={[styles.accountChipBtn, selectedAccountId === acc.id && styles.accountChipBtnSelected]}
                     onPress={() => setSelectedAccountId(acc.id)}
                     activeOpacity={0.7}
                   >
-                    <Text
-                      style={[
-                        styles.accountChipBtnText,
-                        selectedAccountId === acc.id && styles.accountChipBtnTextSelected,
-                      ]}
-                    >
+                    <Text style={[styles.accountChipBtnText, selectedAccountId === acc.id && styles.accountChipBtnTextSelected]}>
                       {acc.bankName}
                     </Text>
                     <Text style={styles.accountChipLabel}>{acc.accountLabel}</Text>
@@ -351,18 +425,11 @@ export default function ImportaScreen() {
                 />
               )}
               <View style={styles.balanceActions}>
-                <TouchableOpacity
-                  style={styles.ghostSmallBtn}
-                  onPress={() => setBalanceUpdated(true)}
-                  activeOpacity={0.7}
-                >
+                <TouchableOpacity style={styles.ghostSmallBtn} onPress={() => setBalanceUpdated(true)} activeOpacity={0.7}>
                   <Text style={styles.ghostSmallBtnText}>Salta</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
-                  style={[
-                    styles.accentBtn,
-                    (!selectedAccountId || !newBalance) && styles.accentBtnDisabled,
-                  ]}
+                  style={[styles.accentBtn, (!selectedAccountId || !newBalance) && styles.accentBtnDisabled]}
                   onPress={handleUpdateBalance}
                   disabled={!selectedAccountId || !newBalance}
                   activeOpacity={0.8}
@@ -384,7 +451,6 @@ export default function ImportaScreen() {
                   </Text>
                 </View>
               </View>
-
               <View style={styles.emergencyPills}>
                 {([3, 6] as const).map(m => (
                   <TouchableOpacity
@@ -402,13 +468,8 @@ export default function ImportaScreen() {
                   </TouchableOpacity>
                 ))}
               </View>
-
               <View style={styles.emergencyActions}>
-                <TouchableOpacity
-                  style={styles.emergencySkip}
-                  onPress={() => setEmergencyDone(true)}
-                  activeOpacity={0.7}
-                >
+                <TouchableOpacity style={styles.emergencySkip} onPress={() => setEmergencyDone(true)} activeOpacity={0.7}>
                   <Text style={styles.emergencySkipText}>Non ora</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
@@ -435,11 +496,7 @@ export default function ImportaScreen() {
             </View>
           )}
 
-          <Button
-            label="Vai alla Home"
-            onPress={handleGoHome}
-            fullWidth
-          />
+          <Button label="Vai alla Home" onPress={handleGoHome} fullWidth />
           <Button
             label="Vedi Transazioni"
             onPress={() => { handleReset(); router.push('/(tabs)/spese'); }}
@@ -461,95 +518,57 @@ export default function ImportaScreen() {
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
       >
-        {/* Header */}
         <View style={styles.header}>
           <Text style={styles.title}>Importa Dati</Text>
-          <Text style={styles.subtitle}>Carica o inserisci le tue transazioni</Text>
+          <Text style={styles.subtitle}>Carica le tue transazioni con AI</Text>
         </View>
 
-        {/* Hero */}
         <LinearGradient
           colors={Gradients.accent}
           start={{ x: 0, y: 0 }}
           end={{ x: 1, y: 1 }}
           style={styles.hero}
         >
-          <Ionicons name="lock-closed" size={36} color="#fff" />
-          <Text style={styles.heroTitle}>I tuoi file sono al sicuro</Text>
+          <Ionicons name="sparkles" size={36} color="#fff" />
+          <Text style={styles.heroTitle}>Analisi AI dei tuoi file</Text>
           <Text style={styles.heroBody}>
-            I dati vengono elaborati localmente sul tuo dispositivo e non vengono mai condivisi con terze parti.
+            Seleziona uno o più estratti conto. L'AI estrarrà e categorizzerà automaticamente tutte le transazioni.
           </Text>
         </LinearGradient>
 
-        {/* File cards */}
-        <View>
-          <Text style={styles.sectionTitle}>Carica Estratto Conto</Text>
-          <View style={styles.fileGrid}>
-            {settings.import.pdf && (
-              <TouchableOpacity
-                style={styles.fileCard}
-                activeOpacity={0.7}
-                onPress={handlePDF}
-              >
-                <View style={styles.fileIcon}>
-                  <Ionicons name="document-text" size={24} color={Colors.accent.primary} />
-                </View>
-                <Text style={styles.fileLabel}>PDF</Text>
-                <Text style={styles.fileDesc}>Estratto conto PDF</Text>
-                <View style={styles.comingSoonBadge}>
-                  <Text style={styles.comingSoonText}>Prossimamente</Text>
-                </View>
-              </TouchableOpacity>
-            )}
-            {settings.import.excel && (
-              <TouchableOpacity
-                style={styles.fileCard}
-                activeOpacity={0.7}
-                onPress={handleExcel}
-              >
-                <View style={styles.fileIcon}>
-                  <Ionicons name="grid" size={24} color={Colors.accent.primary} />
-                </View>
-                <Text style={styles.fileLabel}>Excel</Text>
-                <Text style={styles.fileDesc}>File .xlsx</Text>
-              </TouchableOpacity>
-            )}
-            {settings.import.csv && (
-              <TouchableOpacity
-                style={styles.fileCard}
-                activeOpacity={0.7}
-                onPress={handleCSV}
-              >
-                <View style={styles.fileIcon}>
-                  <Ionicons name="list" size={24} color={Colors.accent.primary} />
-                </View>
-                <Text style={styles.fileLabel}>CSV</Text>
-                <Text style={styles.fileDesc}>File CSV</Text>
-              </TouchableOpacity>
-            )}
+        <TouchableOpacity style={styles.uploadBtn} onPress={handlePickFiles} activeOpacity={0.8}>
+          <View style={styles.uploadBtnIcon}>
+            <Ionicons name="cloud-upload-outline" size={32} color={Colors.accent.primary} />
           </View>
+          <Text style={styles.uploadBtnTitle}>Seleziona file</Text>
+          <Text style={styles.uploadBtnDesc}>PDF, Excel, CSV — anche più file alla volta</Text>
+        </TouchableOpacity>
+
+        <View style={styles.formatsRow}>
+          {[
+            { icon: 'document-text', label: 'PDF' },
+            { icon: 'grid', label: 'Excel' },
+            { icon: 'list', label: 'CSV' },
+          ].map(f => (
+            <View key={f.label} style={styles.formatChip}>
+              <Ionicons name={f.icon as any} size={14} color={Colors.text.secondary} />
+              <Text style={styles.formatChipText}>{f.label}</Text>
+            </View>
+          ))}
         </View>
 
-        {/* Manual entry */}
         {settings.import.manual && (
           <View style={styles.manualSection}>
             <Text style={styles.sectionTitle}>Inserimento Manuale</Text>
-            <Text style={styles.manualDesc}>
-              Aggiungi una transazione compilando il modulo a mano.
-            </Text>
-            <Button
-              label="Inserisci Manualmente"
-              onPress={() => router.push('/add-transaction')}
-              fullWidth
-            />
+            <Text style={styles.manualDesc}>Aggiungi una transazione compilando il modulo a mano.</Text>
+            <Button label="Inserisci Manualmente" onPress={() => router.push('/add-transaction')} fullWidth />
           </View>
         )}
 
-        {/* Note */}
         <View style={styles.note}>
           <Ionicons name="shield-checkmark-outline" size={14} color={Colors.text.muted} />
           <Text style={styles.noteText}>
-            Tutti i dati rimangono sul dispositivo. Nessun dato viene inviato a server esterni.
+            I dati vengono elaborati localmente. Solo il testo estratto viene inviato all'AI.
           </Text>
         </View>
 
@@ -557,6 +576,13 @@ export default function ImportaScreen() {
       </ScrollView>
     </SafeAreaView>
   );
+}
+
+function getFileIcon(name: string): any {
+  const lower = name.toLowerCase();
+  if (lower.endsWith('.pdf')) return 'document-text';
+  if (lower.endsWith('.xlsx') || lower.endsWith('.xls') || lower.endsWith('.ods')) return 'grid';
+  return 'list';
 }
 
 const styles = StyleSheet.create({
@@ -576,7 +602,7 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    gap: 16,
+    gap: 14,
     paddingHorizontal: 32,
   },
   centeredScroll: {
@@ -586,15 +612,6 @@ const styles = StyleSheet.create({
     gap: 16,
     paddingHorizontal: 32,
     paddingVertical: 40,
-  },
-  loadingText: {
-    ...Typography.body,
-    color: Colors.text.secondary,
-  },
-  loadingSubText: {
-    ...Typography.caption,
-    color: Colors.text.muted,
-    marginTop: 4,
   },
   header: {
     gap: 4,
@@ -624,52 +641,57 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     lineHeight: 20,
   },
-  sectionTitle: {
-    ...Typography.h3,
-    color: Colors.text.primary,
-    marginBottom: 12,
-  },
-  fileGrid: {
-    flexDirection: 'row',
-    gap: 12,
-  },
-  fileCard: {
-    flex: 1,
+  uploadBtn: {
     backgroundColor: Colors.bg.card,
-    borderRadius: Radius.lg,
+    borderRadius: Radius.xl,
     borderWidth: 1.5,
-    borderColor: Colors.border.default,
-    padding: 16,
+    borderColor: Colors.border.accent,
+    borderStyle: 'dashed',
+    padding: 32,
     alignItems: 'center',
-    gap: 8,
+    gap: 10,
   },
-  fileIcon: {
-    width: 48,
-    height: 48,
-    borderRadius: Radius.md,
+  uploadBtnIcon: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
     backgroundColor: Colors.accent.glow,
     justifyContent: 'center',
     alignItems: 'center',
   },
-  fileLabel: {
-    ...Typography.bodyMedium,
+  uploadBtnTitle: {
+    ...Typography.h3,
     color: Colors.text.primary,
-    fontWeight: '700',
   },
-  fileDesc: {
-    ...Typography.micro,
+  uploadBtnDesc: {
+    ...Typography.caption,
     color: Colors.text.muted,
     textAlign: 'center',
   },
-  comingSoonBadge: {
-    backgroundColor: Colors.bg.elevated,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: Radius.full,
+  formatsRow: {
+    flexDirection: 'row',
+    gap: 8,
+    justifyContent: 'center',
   },
-  comingSoonText: {
-    ...Typography.micro,
-    color: Colors.text.muted,
+  formatChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: Colors.bg.elevated,
+    borderRadius: Radius.full,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderWidth: 1,
+    borderColor: Colors.border.subtle,
+  },
+  formatChipText: {
+    ...Typography.caption,
+    color: Colors.text.secondary,
+  },
+  sectionTitle: {
+    ...Typography.h3,
+    color: Colors.text.primary,
+    marginBottom: 4,
   },
   manualSection: {
     gap: 12,
@@ -690,41 +712,64 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     flex: 1,
   },
-  // Preview styles
-  bankChip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    alignSelf: 'flex-start',
-    backgroundColor: Colors.accent.glow,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: Radius.full,
-    borderWidth: 1,
-    borderColor: Colors.border.accent,
-  },
-  bankChipText: {
-    ...Typography.caption,
-    color: Colors.accent.primary,
-    fontWeight: '600',
-  },
-  previewCard: {
-    backgroundColor: Colors.bg.card,
-    borderRadius: Radius.lg,
-    borderWidth: 1,
-    borderColor: Colors.border.default,
-    padding: 16,
-    gap: 6,
-  },
-  previewCount: {
-    ...Typography.h3,
+  // Loading
+  loadingTitle: {
+    ...Typography.h2,
     color: Colors.text.primary,
   },
-  previewSkipped: {
+  loadingSubText: {
+    ...Typography.caption,
+    color: Colors.text.secondary,
+    textAlign: 'center',
+  },
+  progressText: {
     ...Typography.caption,
     color: Colors.text.muted,
   },
-  sampleCard: {
+  warningBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: Colors.semantic.warning + '15',
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: Colors.semantic.warning + '40',
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    alignSelf: 'stretch',
+  },
+  warningText: {
+    ...Typography.caption,
+    color: Colors.semantic.warning,
+    flex: 1,
+  },
+  jobsList: {
+    alignSelf: 'stretch',
+    backgroundColor: Colors.bg.card,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: Colors.border.default,
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    gap: 4,
+  },
+  jobRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 6,
+  },
+  jobName: {
+    ...Typography.caption,
+    color: Colors.text.primary,
+    flex: 1,
+  },
+  jobCount: {
+    ...Typography.micro,
+    color: Colors.text.muted,
+  },
+  // Queue
+  queueCard: {
     backgroundColor: Colors.bg.card,
     borderRadius: Radius.lg,
     borderWidth: 1,
@@ -732,39 +777,69 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 4,
   },
-  sampleTitle: {
-    ...Typography.caption,
-    color: Colors.text.muted,
-    paddingVertical: 12,
-  },
-  sampleRow: {
+  queueRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: 12,
+    gap: 12,
+    paddingVertical: 14,
   },
-  sampleInfo: {
-    flex: 1,
-    gap: 2,
-  },
-  sampleDesc: {
+  queueFileName: {
     ...Typography.bodyMedium,
     color: Colors.text.primary,
-  },
-  sampleDate: {
-    ...Typography.caption,
-    color: Colors.text.muted,
-  },
-  sampleAmount: {
-    ...Typography.bodyMedium,
-    fontWeight: '600',
+    flex: 1,
   },
   divider: {
     height: 1,
     backgroundColor: Colors.border.subtle,
   },
-  previewActions: {
+  addMoreBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 12,
+    borderRadius: Radius.md,
+    backgroundColor: Colors.bg.elevated,
+    borderWidth: 1,
+    borderColor: Colors.border.accent,
+    borderStyle: 'dashed',
+  },
+  addMoreText: {
+    ...Typography.bodyMedium,
+    color: Colors.accent.primary,
+  },
+  aiNote: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    justifyContent: 'center',
+  },
+  aiNoteText: {
+    ...Typography.caption,
+    color: Colors.text.muted,
+  },
+  queueActions: {
     gap: 12,
+  },
+  // Error jobs
+  errorJobsCard: {
+    alignSelf: 'stretch',
+    backgroundColor: Colors.semantic.danger + '15',
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: Colors.semantic.danger + '40',
+    padding: 12,
+    gap: 6,
+  },
+  errorJobRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+  },
+  errorJobText: {
+    ...Typography.micro,
+    color: Colors.semantic.danger,
+    flex: 1,
   },
   // Balance update card
   balanceCard: {
@@ -823,7 +898,6 @@ const styles = StyleSheet.create({
   },
   accentBtnDisabled: { opacity: 0.4 },
   accentBtnText: { ...Typography.bodyMedium, color: '#fff', fontWeight: '600' },
-
   // Emergency fund card
   emergencyCard: {
     backgroundColor: Colors.bg.card,
@@ -858,8 +932,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFB347', alignItems: 'center',
   },
   emergencyCreateText: { ...Typography.bodyMedium, color: '#000', fontWeight: '700' },
-
-  // Done styles
+  // Done
   doneIcon: {
     width: 80,
     height: 80,

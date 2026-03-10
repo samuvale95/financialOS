@@ -7,6 +7,7 @@ import { StyleSheet } from 'react-native';
 import { SettingsProvider } from '../contexts/SettingsContext';
 import { DataProvider } from '../contexts/DataContext';
 import { loadOnboardingData } from '../utils/storage';
+import { requestNotificationPermission } from '../utils/notifications';
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
@@ -21,6 +22,7 @@ export default function RootLayout() {
       setOnboardingChecked(true);
       SplashScreen.hideAsync().catch(() => {});
     });
+    requestNotificationPermission().catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -55,6 +57,14 @@ export default function RootLayout() {
             />
             <Stack.Screen
               name="subscriptions"
+              options={{ presentation: 'modal', animation: 'slide_from_bottom' }}
+            />
+            <Stack.Screen
+              name="import-analytics"
+              options={{ presentation: 'modal', animation: 'slide_from_bottom' }}
+            />
+            <Stack.Screen
+              name="import-logs"
               options={{ presentation: 'modal', animation: 'slide_from_bottom' }}
             />
           </Stack>

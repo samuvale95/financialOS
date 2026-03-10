@@ -5,8 +5,11 @@ import React, {
   useEffect,
   useCallback,
   useMemo,
+  useRef,
 } from 'react';
 import type { Transaction, Budget, Asset, Goal, MonthSummary, Insight, StoredBudget, BankAccount, Subscription } from '../types';
+import type { ParseResult } from '../utils/parsers';
+import { sendImportNotification } from '../utils/notifications';
 import type { CategoryId } from '../constants/categories';
 import { CATEGORIES } from '../constants/categories';
 import {
@@ -153,6 +156,18 @@ interface AppData {
   answerQuestion: (questionId: string, tag: string) => void;
   dismissQuestion: (questionId: string) => void;
   resetAll: () => Promise<void>;
+  importJobs: ImportJob[];
+  enqueueImport: (files: { uri: string; name: string }[], parseFn: (uri: string, name: string) => Promise<ParseResult>) => void;
+  clearImportJobs: () => void;
+}
+
+export interface ImportJob {
+  id: string;
+  fileName: string;
+  uri: string;
+  status: 'pending' | 'processing' | 'done' | 'error';
+  addedCount?: number;
+  error?: string;
 }
 
 const DataContext = createContext<AppData | null>(null);
@@ -168,6 +183,10 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
   const [brandRules, setBrandRulesState] = useState<Record<string, CategoryId>>({});
   const [insightProfile, setInsightProfile] = useState<InsightProfile>(EMPTY_PROFILE);
   const [isLoading, setIsLoading] = useState(true);
+  const [importJobs, setImportJobs] = useState<ImportJob[]>([]);
+  const parseJobFnsRef = useRef<Map<string, (uri: string, name: string) => Promise<ParseResult>>>(new Map());
+  const processingRef = useRef(false);
+  const notificationSentRef = useRef(false);
 
   useEffect(() => {
     Promise.all([
@@ -462,6 +481,76 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     });
   }, []);
 
+  const enqueueImport = useCallback((
+    files: { uri: string; name: string }[],
+    parseFn: (uri: string, name: string) => Promise<ParseResult>,
+  ) => {
+    const newJobs: ImportJob[] = files.map(f => ({
+      id: `job_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      fileName: f.name,
+      uri: f.uri,
+      status: 'pending',
+    }));
+    newJobs.forEach(j => parseJobFnsRef.current.set(j.id, parseFn));
+    notificationSentRef.current = false;
+    setImportJobs(prev => [...prev, ...newJobs]);
+  }, []);
+
+  const clearImportJobs = useCallback(() => {
+    parseJobFnsRef.current.clear();
+    processingRef.current = false;
+    notificationSentRef.current = false;
+    setImportJobs([]);
+  }, []);
+
+  // Process pending import jobs sequentially
+  useEffect(() => {
+    if (processingRef.current) return;
+    const pendingJob = importJobs.find(j => j.status === 'pending');
+    if (!pendingJob) return;
+
+    const parseFn = parseJobFnsRef.current.get(pendingJob.id);
+    if (!parseFn) {
+      setImportJobs(prev => prev.map(j =>
+        j.id === pendingJob.id ? { ...j, status: 'error', error: 'Parser non trovato' } : j
+      ));
+      return;
+    }
+
+    processingRef.current = true;
+    setImportJobs(prev => prev.map(j =>
+      j.id === pendingJob.id ? { ...j, status: 'processing' } : j
+    ));
+
+    parseFn(pendingJob.uri, pendingJob.fileName)
+      .then(result => {
+        const added = addTransactions(result.transactions as Omit<Transaction, 'id'>[]);
+        setImportJobs(prev => prev.map(j =>
+          j.id === pendingJob.id ? { ...j, status: 'done', addedCount: added } : j
+        ));
+      })
+      .catch(err => {
+        const msg = err instanceof Error ? err.message : String(err);
+        setImportJobs(prev => prev.map(j =>
+          j.id === pendingJob.id ? { ...j, status: 'error', error: msg } : j
+        ));
+      })
+      .finally(() => {
+        processingRef.current = false;
+      });
+  }, [importJobs, addTransactions]);
+
+  // Fire notification when all jobs have settled
+  useEffect(() => {
+    if (importJobs.length === 0) return;
+    const allSettled = importJobs.every(j => j.status === 'done' || j.status === 'error');
+    if (!allSettled || notificationSentRef.current) return;
+    notificationSentRef.current = true;
+    const totalAdded = importJobs.reduce((s, j) => s + (j.addedCount ?? 0), 0);
+    const errorCount = importJobs.filter(j => j.status === 'error').length;
+    sendImportNotification(totalAdded, importJobs.length, errorCount).catch(() => {});
+  }, [importJobs]);
+
   const resetAll = useCallback(async () => {
     await clearAllData();
     setTransactions([]);
@@ -512,6 +601,9 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
         answerQuestion,
         dismissQuestion,
         resetAll,
+        importJobs,
+        enqueueImport,
+        clearImportJobs,
       }}
     >
       {children}

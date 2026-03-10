@@ -22,6 +22,7 @@ import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import { Colors, Typography, Radius, Spacing } from '../constants/theme';
 import { useData } from '../contexts/DataContext';
+import { useSettings } from '../contexts/SettingsContext';
 import { saveOnboardingData } from '../utils/storage';
 import { calculateBudgets } from '../utils/budgetCalculator';
 import type { BudgetContext } from '../utils/budgetCalculator';
@@ -34,6 +35,13 @@ import type { LocalAsset } from '../constants/popularAssets';
 import { parseCSV } from '../utils/parsers';
 import { parseExcel } from '../utils/excelParser';
 import { parsePDF } from '../utils/pdfParser';
+import { hasGemini, parseWithGemini } from '../utils/geminiParser';
+import { hasOpenAI, parseWithOpenAI } from '../utils/openaiParser';
+import { sendImportNotification } from '../utils/notifications';
+import { parseWithSmartParser } from '../utils/smartImportParser';
+import { logImportEvent } from '../utils/importAnalytics';
+import type { ImportModel, ImportTier, ImportStrategy } from '../utils/importAnalytics';
+import { startLogSession, finishLogSession } from '../utils/importLogger';
 import { ITALIAN_BANKS } from '../constants/italianBanks';
 import type { ItalianBank } from '../constants/italianBanks';
 import { CATEGORIES, EXPENSE_CATEGORIES } from '../constants/categories';
@@ -862,8 +870,9 @@ function IncomeForm({ onAdd }: { onAdd: (s: IncomeSource) => void }) {
 
 export default function OnboardingScreen() {
   const { addAccount, addAsset, addTransactions, setBudgetLimit, setMerchantRule, addGoal } = useData();
+  const { settings } = useSettings();
   const [state, setState] = useState<WizardState>(INIT_STATE);
-  const [importing, setImporting] = useState(false);
+  const [importing, setImporting] = useState<string | null>(null); // null = idle, string = current filename
   const [regionSearch, setRegionSearch] = useState('');
   const [showRegionPicker, setShowRegionPicker] = useState(false);
   const [showAddAccount, setShowAddAccount] = useState(false);
@@ -937,37 +946,114 @@ export default function OnboardingScreen() {
 
   const handleImport = async () => {
     try {
-      setImporting(true);
-      const res = await DocumentPicker.getDocumentAsync({ type: ['*/*'], copyToCacheDirectory: true });
-      if (res.canceled || !res.assets?.[0]) { setImporting(false); return; }
-      const asset = res.assets[0];
-      const name = (asset.name ?? '').toLowerCase();
+      const res = await DocumentPicker.getDocumentAsync({
+        type: ['*/*'],
+        copyToCacheDirectory: true,
+        multiple: true,
+      });
+      if (res.canceled || !res.assets?.length) return;
 
-      let result;
-      if (name.endsWith('.pdf')) {
-        result = await parsePDF(asset.uri);
-      } else if (name.endsWith('.csv') || name.endsWith('.txt')) {
-        result = parseCSV(await FileSystem.readAsStringAsync(asset.uri));
-      } else {
-        result = await parseExcel(asset.uri);
+      const hasAnyAI = hasOpenAI || hasGemini;
+      let totalAdded = 0;
+      let errors = 0;
+
+      const useCache = settings.developer?.useAiCache ?? false;
+      const importStrategy = (settings.developer?.importStrategy ?? 'smart') as ImportStrategy;
+      const provider = settings.import.aiProvider;
+      const baseParser = hasOpenAI ? parseWithOpenAI : parseWithGemini;
+
+      for (const asset of res.assets) {
+        setImporting(asset.name ?? 'file');
+        const name = (asset.name ?? '').toLowerCase();
+        try {
+          console.log('[Onboarding Import] hasOpenAI:', hasOpenAI, '| hasGemini:', hasGemini, '| strategia:', importStrategy, '| file:', asset.name);
+          const t0 = Date.now();
+          let result;
+
+          if (hasAnyAI) {
+            const logModel = provider === 'openai' ? 'gpt-4o-mini' : 'gemini-2.5-flash';
+            startLogSession(asset.name ?? 'file', logModel, importStrategy);
+            try {
+              if (importStrategy === 'smart') {
+                result = await parseWithSmartParser(asset.uri, asset.name ?? 'file', {
+                  useCache,
+                  provider,
+                  fullAIParser: baseParser,
+                  onSchemaLearned: (bankName) =>
+                    console.log('[Onboarding] nuovo schema salvato per:', bankName),
+                });
+              } else {
+                // Full AI: same logic as importa.tsx full_ai path
+                const { getCachedResult, setCachedResult } = await import('../utils/aiParserCache');
+                if (useCache) {
+                  const cached = await getCachedResult(asset.name ?? 'file');
+                  if (cached) {
+                    result = { ...cached, _tier: 'L1_cache' as const };
+                  } else {
+                    const raw = await baseParser(asset.uri, asset.name ?? 'file');
+                    result = { ...raw, _tier: 'L3_full_ai' as const };
+                    await setCachedResult(asset.name ?? 'file', result);
+                  }
+                } else {
+                  const raw = await baseParser(asset.uri, asset.name ?? 'file');
+                  result = { ...raw, _tier: 'L3_full_ai' as const };
+                }
+              }
+            } catch (err) {
+              const elapsed = Date.now() - t0;
+              const errMsg = err instanceof Error ? err.message : String(err);
+              await finishLogSession([], elapsed, undefined, errMsg);
+              throw err;
+            }
+
+            const elapsed = Date.now() - t0;
+            const tier: ImportTier = result._tier ?? 'L3_full_ai';
+            const model: ImportModel = tier === 'L1_cache' ? 'none' : provider;
+
+            await finishLogSession(result.transactions, elapsed, tier);
+
+            logImportEvent({
+              fileName: asset.name ?? 'file',
+              strategy: importStrategy,
+              tier,
+              model,
+              processingTimeMs: elapsed,
+              transactionsExtracted: result.transactions.length,
+              bankName: result.bankName,
+            }).catch(() => {});
+          } else if (name.endsWith('.pdf')) {
+            result = await parsePDF(asset.uri);
+          } else if (name.endsWith('.csv') || name.endsWith('.txt')) {
+            result = parseCSV(await FileSystem.readAsStringAsync(asset.uri));
+          } else {
+            result = await parseExcel(asset.uri);
+          }
+
+          if (result.transactions.length === 0) {
+            Alert.alert('Nessuna transazione', `"${asset.name}" non contiene transazioni valide.`);
+            continue;
+          }
+          const newFile: ImportedFile = {
+            id: `imp_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`,
+            fileName: asset.name ?? 'file',
+            bankName: result.bankName,
+            accountIndex: null,
+            transactions: result.transactions,
+          };
+          setState(s => ({ ...s, importedFiles: [...s.importedFiles, newFile] }));
+          totalAdded += result.transactions.length;
+        } catch (e) {
+          errors++;
+          const msg = e instanceof Error ? e.message : String(e);
+          Alert.alert('Errore file', `"${asset.name}": ${msg.slice(0, 120)}`);
+        }
       }
 
-      if (result.transactions.length === 0) {
-        Alert.alert('Nessuna transazione', 'Il file non contiene transazioni valide.');
-        setImporting(false); return;
+      if (res.assets.length > 1 || errors > 0) {
+        sendImportNotification(totalAdded, res.assets.length, errors).catch(() => {});
       }
-      const newFile: ImportedFile = {
-        id: `imp_${Date.now()}`,
-        fileName: asset.name ?? 'file',
-        bankName: result.bankName,
-        accountIndex: null,
-        transactions: result.transactions,
-      };
-      setState(s => ({ ...s, importedFiles: [...s.importedFiles, newFile] }));
-    } catch {
-      Alert.alert('Errore', 'Impossibile leggere il file. Verifica che sia un estratto conto valido (.pdf, .xlsx, .csv).');
     } finally {
-      setImporting(false);
+      setImporting(null);
     }
   };
 
@@ -1645,13 +1731,15 @@ export default function OnboardingScreen() {
             {importing ? (
               <View style={s.importingRow}>
                 <ActivityIndicator color={Colors.accent.primary} />
-                <Text style={s.loadingText}>Elaborazione file…</Text>
+                <Text style={s.loadingText} numberOfLines={1}>
+                  {importing}…
+                </Text>
               </View>
             ) : (
               <TouchableOpacity style={s.addFileBtn} onPress={handleImport} activeOpacity={0.7}>
                 <Ionicons name="add-circle-outline" size={20} color={Colors.accent.primary} />
                 <Text style={s.addFileBtnText}>
-                  {state.importedFiles.length === 0 ? 'Aggiungi file (CSV o Excel)' : 'Aggiungi altro file'}
+                  {state.importedFiles.length === 0 ? 'Seleziona file (anche più di uno)' : 'Aggiungi altri file'}
                 </Text>
               </TouchableOpacity>
             )}
