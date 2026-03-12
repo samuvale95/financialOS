@@ -73,6 +73,7 @@ export interface SpendingAnalysis {
   monthIncome: number;
   savingsRate: number;
   analysisMonth: string; // YYYY-MM
+  isHistoricalMonth: boolean; // true when analysisMonth ≠ current calendar month
 }
 
 const EXPENSE_CATEGORY_IDS: CategoryId[] = [
@@ -465,5 +466,6 @@ export function analyzeSpending(
     monthIncome,
     savingsRate,
     analysisMonth: thisMonth,
+    isHistoricalMonth: thisMonth !== getMonthPrefix(0),
   };
 }

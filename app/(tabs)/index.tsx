@@ -119,6 +119,26 @@ function FiscoCard({ transactions }: { transactions: Transaction[] }) {
   );
 }
 
+function HistoricalMonthBanner({ month, onDismiss }: { month: string; onDismiss: () => void }) {
+  const label = new Date(month + '-01').toLocaleDateString('it-IT', {
+    month: 'long',
+    year: 'numeric',
+  });
+  return (
+    <View style={styles.historicalBanner}>
+      <Ionicons name="time-outline" size={16} color="#7A5200" style={{ marginTop: 1 }} />
+      <Text style={styles.historicalBannerText}>
+        Stai visualizzando i dati di{' '}
+        <Text style={styles.historicalBannerBold}>{label}</Text>.{' '}
+        Importa transazioni recenti per aggiornare.
+      </Text>
+      <TouchableOpacity onPress={onDismiss} activeOpacity={0.7} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+        <Ionicons name="close" size={16} color="#7A5200" />
+      </TouchableOpacity>
+    </View>
+  );
+}
+
 interface GoalWidgetArgs {
   mainGoal: OnboardingGoalId | null;
   goals: Goal[];
@@ -185,10 +205,25 @@ export default function DashboardScreen() {
   const { settings } = useSettings();
   const [mainGoal, setMainGoal] = useState<OnboardingGoalId | null>(null);
   const [reconciliationDismissed, setReconciliationDismissed] = useState(false);
+  const [historicalBannerDismissed, setHistoricalBannerDismissed] = useState(false);
 
   useEffect(() => {
     loadOnboardingData().then((d) => setMainGoal(d.mainGoal ?? null));
   }, []);
+
+  // Detect when all data is from a previous month (same logic as analyzeSpending auto-detect)
+  const historicalMonthInfo = useMemo(() => {
+    if (transactions.length === 0) return null;
+    const nowMonth = new Date().toISOString().slice(0, 7);
+    const hasCurrentMonth = transactions.some(
+      (t) => t.date.startsWith(nowMonth) && t.category !== 'transfer',
+    );
+    if (hasCurrentMonth) return null;
+    const lastMonth = [...new Set(
+      transactions.filter((t) => t.category !== 'transfer').map((t) => t.date.slice(0, 7)),
+    )].sort().at(-1) ?? nowMonth;
+    return lastMonth;
+  }, [transactions]);
 
   // Stored budgets come from `budgets` (Budget[] has limit + spent); pass as StoredBudget shape
   const reconciliationResults = useMemo(() => {
@@ -260,6 +295,12 @@ export default function DashboardScreen() {
           <SectionErrorBoundary label="Dashboard non disponibile">
           <>
             <NetWorthCard summary={monthSummary} />
+            {historicalMonthInfo && !historicalBannerDismissed && (
+              <HistoricalMonthBanner
+                month={historicalMonthInfo}
+                onDismiss={() => setHistoricalBannerDismissed(true)}
+              />
+            )}
             <ReconciliationBanner
               results={reconciliationResults}
               onAdjustBudget={handleAdjustBudget}
@@ -454,5 +495,26 @@ const styles = StyleSheet.create({
     ...Typography.h3,
     color: Colors.text.primary,
     fontWeight: '700',
+  },
+  historicalBanner: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+    backgroundColor: '#FFB347' + '28',
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: '#FFB347' + '88',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  historicalBannerText: {
+    ...Typography.caption,
+    color: '#7A5200',
+    flex: 1,
+    lineHeight: 18,
+  },
+  historicalBannerBold: {
+    fontWeight: '700',
+    textTransform: 'capitalize',
   },
 });

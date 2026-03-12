@@ -710,8 +710,8 @@ export default function CoachScreen() {
   );
 
   const questions = useMemo(
-    () => generateCoachQuestions(analysis, insightProfile),
-    [analysis, insightProfile],
+    () => generateCoachQuestions(analysis, insightProfile, selectedMonth),
+    [analysis, insightProfile, selectedMonth],
   );
 
   const budgetForecasts = useMemo(() => getBudgetForecast(budgets, transactions), [budgets, transactions]);

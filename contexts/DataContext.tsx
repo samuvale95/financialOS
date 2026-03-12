@@ -22,8 +22,11 @@ import {
   loadMerchantRules, saveMerchantRules,
   loadBrandRules, saveBrandRules,
   loadInsightProfile, saveInsightProfile,
+  loadOnboardingData,
   clearAllData,
 } from '../utils/storage';
+import { calculateBudgets } from '../utils/budgetCalculator';
+import type { BudgetContext } from '../utils/budgetCalculator';
 import { refreshAssetIfStale } from '../utils/financialApi';
 import { getMerchantKey, getTaxInfo, extractBrand } from '../utils/categorizer';
 import type { InsightProfile } from '../utils/insightProfile';
@@ -198,7 +201,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       loadMerchantRules(),
       loadBrandRules(),
       loadInsightProfile(),
-    ]).then(([txs, buds, ass, gls, accs, subs, rules, brules, profile]) => {
+    ]).then(async ([txs, buds, ass, gls, accs, subs, rules, brules, profile]) => {
       setTransactions(txs);
       // Deduplicate assets by id in case of corrupted storage
       const seenAssets = new Set<string>();
@@ -214,11 +217,33 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       setMerchantRulesState(rules as Record<string, CategoryId>);
       setBrandRulesState(brules as Record<string, CategoryId>);
       setInsightProfile(profile);
+      // Inizializza budgets: preferisci budgetCalculator se onboarding completato
       if (buds.length > 0) {
         setStoredBudgets(buds);
       } else {
-        setStoredBudgets(DEFAULT_BUDGET_LIMITS);
-        saveStoredBudgets(DEFAULT_BUDGET_LIMITS);
+        const onboarding = await loadOnboardingData();
+        const income = onboarding.monthlyIncome ?? 0;
+        if (onboarding.completed && income > 0) {
+          const ctx: BudgetContext = {
+            householdSize: onboarding.userProfile?.householdSize,
+            housingType: onboarding.housingInfo?.type ?? null,
+            housingMonthlyCost: onboarding.housingInfo?.monthlyCost,
+            region: onboarding.userProfile?.region ?? null,
+            dependents: onboarding.userProfile?.dependents,
+            lifestyleProfile: onboarding.lifestyleProfile,
+          };
+          const generated = calculateBudgets(
+            income,
+            onboarding.goals ?? [],
+            onboarding.effortLevel ?? 'moderato',
+            ctx,
+          );
+          setStoredBudgets(generated);
+          saveStoredBudgets(generated);
+        } else {
+          setStoredBudgets(DEFAULT_BUDGET_LIMITS);
+          saveStoredBudgets(DEFAULT_BUDGET_LIMITS);
+        }
       }
       setIsLoading(false);
     });

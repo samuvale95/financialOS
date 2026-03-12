@@ -130,7 +130,7 @@ function subscriptionQuestion(ca: CategoryAnalysis): CoachQuestion | null {
     .join(', ');
 
   return {
-    id: `q_subscriptions_${Math.floor(monthTotal)}`,
+    id: 'q_subscriptions_review',
     category: 'subscriptions',
     priority: ca.status === 'over' ? 85 : 65,
     title: `${count} abbonament${count === 1 ? 'o' : 'i'} rilevat${count === 1 ? 'o' : 'i'}`,
@@ -194,7 +194,7 @@ function diningQuestion(ca: CategoryAnalysis): CoachQuestion | null {
   const topPlace = diningMerchants[0];
 
   return {
-    id: `q_dining_${ca.category}_${diningCount}`,
+    id: `q_dining_${ca.category}`,
     category: ca.category,
     priority: ca.status === 'over' ? 80 : 55,
     title: `${diningCount} uscite fuori questo mese`,
@@ -244,7 +244,7 @@ function shoppingOverBudgetQuestion(ca: CategoryAnalysis): CoachQuestion | null 
   const overspend = ca.monthTotal - ca.budgetLimit;
 
   return {
-    id: `q_shopping_over_${Math.floor(ca.monthTotal)}`,
+    id: 'q_shopping_over_budget',
     category: 'shopping',
     priority: 75,
     title: `Shopping: €${overspend.toFixed(0)} oltre il budget`,
@@ -321,11 +321,11 @@ function weekendSpendingQuestion(ca: CategoryAnalysis): CoachQuestion | null {
   };
 }
 
-function trendIncreaseQuestion(ca: CategoryAnalysis): CoachQuestion | null {
+function trendIncreaseQuestion(ca: CategoryAnalysis, month: string): CoachQuestion | null {
   if (ca.vsLastMonth < 35 || ca.prevMonthTotal < 20 || ca.monthTotal < 50) return null;
 
   return {
-    id: `q_trend_${ca.category}_${Math.floor(ca.vsLastMonth)}`,
+    id: `q_trend_${ca.category}_${month}`,
     category: ca.category,
     priority: 60,
     title: `${ca.label} in aumento del ${Math.round(ca.vsLastMonth)}%`,
@@ -367,11 +367,12 @@ function trendIncreaseQuestion(ca: CategoryAnalysis): CoachQuestion | null {
 function lowSavingsQuestion(
   savingsRate: number,
   totalExpenses: number,
+  month: string,
 ): CoachQuestion | null {
   if (savingsRate >= 10 || totalExpenses === 0) return null;
 
   return {
-    id: 'q_savings_low',
+    id: `q_savings_low_${month}`,
     category: 'other',
     priority: 90,
     title:
@@ -421,7 +422,7 @@ function groceriesQuestion(ca: CategoryAnalysis): CoachQuestion | null {
   if (ca.category !== 'groceries' || ca.monthTotal < 400) return null;
 
   return {
-    id: `q_groceries_${Math.floor(ca.monthTotal)}`,
+    id: 'q_groceries_high',
     category: 'groceries',
     priority: ca.status === 'over' ? 70 : 50,
     title: `Supermercato: €${ca.monthTotal.toFixed(0)} questo mese`,
@@ -468,7 +469,7 @@ function rentQuestion(ca: CategoryAnalysis, monthIncome: number): CoachQuestion 
   if (rentPct < 35) return null;
 
   return {
-    id: `q_rent_${Math.floor(ca.monthTotal)}`,
+    id: 'q_rent_high_pct',
     category: 'rent',
     priority: 80,
     title: `Affitto al ${rentPct}% del reddito`,
@@ -513,7 +514,7 @@ function sportsHealthyQuestion(ca: CategoryAnalysis): CoachQuestion | null {
   if (ca.status === 'over') return null; // already handled by other questions
 
   return {
-    id: `q_sports_${Math.floor(ca.monthTotal)}`,
+    id: 'q_sports_within_budget',
     category: 'sports',
     priority: 40,
     title: `Sport: €${ca.monthTotal.toFixed(0)} questo mese`,
@@ -548,7 +549,7 @@ function utilitiesQuestion(ca: CategoryAnalysis): CoachQuestion | null {
   if (ca.category !== 'utilities' || ca.monthTotal < 200) return null;
 
   return {
-    id: `q_utilities_${Math.floor(ca.monthTotal)}`,
+    id: 'q_utilities_high',
     category: 'utilities',
     priority: ca.status === 'over' ? 72 : 52,
     title: `Bollette alte: €${ca.monthTotal.toFixed(0)}/mese`,
@@ -593,14 +594,15 @@ function utilitiesQuestion(ca: CategoryAnalysis): CoachQuestion | null {
 export function generateCoachQuestions(
   analysis: SpendingAnalysis,
   profile: InsightProfile,
+  month: string,
 ): CoachQuestion[] {
   const questions: CoachQuestion[] = [];
 
   const isAnswered = (id: string) =>
     !!profile.answeredQuestions[id] || !!profile.dismissedQuestions[id];
 
-  // Global: low savings check
-  const savingsQ = lowSavingsQuestion(analysis.savingsRate, analysis.totalExpenses);
+  // Global: low savings check (versioned monthly so "Mese difficile" can re-surface next month)
+  const savingsQ = lowSavingsQuestion(analysis.savingsRate, analysis.totalExpenses, month);
   if (savingsQ && !isAnswered(savingsQ.id)) questions.push(savingsQ);
 
   // Per-category questions
@@ -608,11 +610,11 @@ export function generateCoachQuestions(
     if (ca.monthTotal === 0) continue;
 
     const generators = [
-      subscriptionQuestion,
-      diningQuestion,
-      shoppingOverBudgetQuestion,
-      weekendSpendingQuestion,
-      trendIncreaseQuestion,
+      (ca: CategoryAnalysis) => subscriptionQuestion(ca),
+      (ca: CategoryAnalysis) => diningQuestion(ca),
+      (ca: CategoryAnalysis) => shoppingOverBudgetQuestion(ca),
+      (ca: CategoryAnalysis) => weekendSpendingQuestion(ca),
+      (ca: CategoryAnalysis) => trendIncreaseQuestion(ca, month),
       (ca: CategoryAnalysis) => groceriesQuestion(ca),
       (ca: CategoryAnalysis) => rentQuestion(ca, analysis.monthIncome),
       (ca: CategoryAnalysis) => sportsHealthyQuestion(ca),
