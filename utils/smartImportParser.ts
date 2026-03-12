@@ -12,14 +12,10 @@ import { parseWithSchema } from './schemaBasedParser';
 import { enrichCategories } from './merchantCategorizerAI';
 import type { ParseResult } from './parsers';
 
-export type AIProvider = 'openai' | 'gemini';
-
 interface SmartParseOptions {
   /** Se true: controlla cache per nome file prima di tutto */
   useCache: boolean;
-  /** Provider AI da usare per prima elaborazione / arricchimento categorie */
-  provider: AIProvider;
-  /** Funzione che chiama l'AI completa (gemini o openai) — usata solo al primo import */
+  /** Funzione che chiama l'AI completa — usata solo al primo import */
   fullAIParser: (uri: string, name: string) => Promise<ParseResult>;
   /** Callback chiamata ogni volta che viene salvato uno schema nuovo */
   onSchemaLearned?: (bankName: string) => void;
@@ -55,7 +51,7 @@ export async function parseWithSmartParser(
         try {
           let result = await parseWithSchema(uri, schema);
           // Arricchisci solo i merchant sconosciuti
-          result = await enrichCategories(result, opts.provider);
+          result = await enrichCategories(result);
           result = { ...result, _tier: 'L2_schema' as const };
           if (opts.useCache) await setCachedResult(fileName, result);
           return result;

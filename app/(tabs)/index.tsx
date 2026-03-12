@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import {
   ScrollView,
   View,
@@ -17,10 +17,18 @@ import { RecentTransactions } from '../../components/dashboard/RecentTransaction
 import { GoalCard } from '../../components/dashboard/GoalCard';
 import { CashFlowCard } from '../../components/dashboard/CashFlowCard';
 import { Skeleton } from '../../components/ui/Skeleton';
+import EmergencyFundWidget from '../../components/dashboard/EmergencyFundWidget';
+import SavingsRateWidget from '../../components/dashboard/SavingsRateWidget';
+import HouseGoalWidget from '../../components/dashboard/HouseGoalWidget';
+import RetirementWidget from '../../components/dashboard/RetirementWidget';
+import MonthProjectionCard from '../../components/dashboard/MonthProjectionCard';
+import ReconciliationBanner from '../../components/settings/ReconciliationBanner';
+import { reconcileProfile } from '../../utils/profileReconciler';
 import { useData } from '../../contexts/DataContext';
 import { useSettings } from '../../contexts/SettingsContext';
+import { loadOnboardingData } from '../../utils/storage';
 import { calculateEstimated730Refund, calculateForfettarioNetto } from '../../utils/taxCalculator';
-import type { Transaction, Goal } from '../../types';
+import type { Transaction, Goal, OnboardingGoalId } from '../../types';
 
 function EmergencyFundCard({ goals, monthlyExpenses }: { goals: Goal[]; monthlyExpenses: number }) {
   const goal = goals.find((g) => g.title === 'Fondo di Emergenza');
@@ -110,9 +118,88 @@ function FiscoCard({ transactions }: { transactions: Transaction[] }) {
   );
 }
 
+interface GoalWidgetArgs {
+  mainGoal: OnboardingGoalId | null;
+  goals: Goal[];
+  accounts: import('../../types').BankAccount[];
+  monthSummary: import('../../types').MonthSummary;
+}
+
+function renderGoalWidget({ mainGoal, goals, accounts, monthSummary }: GoalWidgetArgs): React.ReactElement | null {
+  const accountsBalance = accounts.reduce((s, a) => s + a.balance, 0);
+  const monthlyExpenses = Math.abs(monthSummary.expenses);
+  const monthlySavings = monthSummary.income - monthlyExpenses;
+
+  switch (mainGoal) {
+    case 'emergenza': {
+      const emergencyGoal = goals.find((g) => g.title === 'Fondo di Emergenza') ?? null;
+      return (
+        <EmergencyFundWidget
+          accountsBalance={accountsBalance}
+          monthlyExpenses={monthlyExpenses}
+          emergencyGoal={emergencyGoal}
+        />
+      );
+    }
+    case 'risparmio':
+      return (
+        <SavingsRateWidget
+          savingsRate={monthSummary.savingsRate}
+          monthlyIncome={monthSummary.income}
+          monthlySavings={monthlySavings}
+        />
+      );
+    case 'casa': {
+      const houseGoal =
+        goals.find((g) =>
+          /casa|acquisto|immobil|ristruttura/i.test(g.title)
+        ) ?? null;
+      return (
+        <HouseGoalWidget
+          goal={houseGoal}
+          monthlySavings={monthlySavings}
+        />
+      );
+    }
+    case 'pensione':
+      return (
+        <RetirementWidget
+          monthlySavings={monthlySavings}
+          currentNetWorth={monthSummary.netWorth}
+        />
+      );
+    case 'viaggio':
+    case 'istruzione': {
+      const keyword = mainGoal === 'viaggio' ? /viaggio|vacanz|trip/i : /istruzione|corso|studio|univers/i;
+      const matchingGoal = goals.find((g) => keyword.test(g.title));
+      return matchingGoal ? <GoalCard goal={matchingGoal} /> : null;
+    }
+    default:
+      return null;
+  }
+}
+
 export default function DashboardScreen() {
-  const { transactions, budgets, goals, subscriptions, monthSummary, isLoading } = useData();
+  const { transactions, budgets, goals, accounts, subscriptions, monthSummary, isLoading, setBudgetLimit } = useData();
   const { settings } = useSettings();
+  const [mainGoal, setMainGoal] = useState<OnboardingGoalId | null>(null);
+  const [reconciliationDismissed, setReconciliationDismissed] = useState(false);
+
+  useEffect(() => {
+    loadOnboardingData().then((d) => setMainGoal(d.mainGoal ?? null));
+  }, []);
+
+  // Stored budgets come from `budgets` (Budget[] has limit + spent); pass as StoredBudget shape
+  const reconciliationResults = useMemo(() => {
+    if (reconciliationDismissed || transactions.length < 30) return [];
+    const storedShape = budgets.map((b) => ({ id: b.id, category: b.category, limit: b.limit, period: b.period }));
+    return reconcileProfile(transactions, storedShape, 2);
+  }, [transactions, budgets, reconciliationDismissed]);
+
+  const handleAdjustBudget = (category: string, newLimit: number) => {
+    setBudgetLimit(category as import('../../constants/categories').CategoryId, newLimit);
+    setReconciliationDismissed(true);
+  };
 
   const today = new Date().toLocaleDateString('it-IT', {
     weekday: 'long',
@@ -171,7 +258,22 @@ export default function DashboardScreen() {
         ) : (
           <>
             <NetWorthCard summary={monthSummary} />
-            <EmergencyFundCard goals={goals} monthlyExpenses={monthSummary.expenses} />
+            <ReconciliationBanner
+              results={reconciliationResults}
+              onAdjustBudget={handleAdjustBudget}
+              onDismiss={() => setReconciliationDismissed(true)}
+            />
+            {renderGoalWidget({
+              mainGoal,
+              goals,
+              accounts,
+              monthSummary,
+            })}
+            {/* Show the goal-progress emergency card only when the main goal is NOT emergenza
+                (avoid showing two emergency widgets at once) */}
+            {mainGoal !== 'emergenza' && (
+              <EmergencyFundCard goals={goals} monthlyExpenses={monthSummary.expenses} />
+            )}
             <IncomeExpenseRow
               income={monthSummary.income}
               expenses={monthSummary.expenses}

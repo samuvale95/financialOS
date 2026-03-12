@@ -6,11 +6,9 @@
 import type { CategoryId } from '../constants/categories';
 import type { ParseResult } from './parsers';
 
-const OPENAI_ENDPOINT = 'https://api.openai.com/v1/chat/completions';
 const GEMINI_ENDPOINT =
-  'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent';
+  'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:streamGenerateContent';
 
-const OPENAI_API_KEY = process.env.EXPO_PUBLIC_OPENAI_API_KEY ?? '';
 const GEMINI_API_KEY = process.env.EXPO_PUBLIC_GEMINI_API_KEY ?? '';
 
 const CATEGORY_IDS = [
@@ -31,53 +29,6 @@ Regole:
 - Usa "transfer" per giroconti tra propri conti
 - Usa "other" solo se sei davvero incerto
 - NON aggiungere testo fuori dal JSON`;
-
-async function callOpenAI(descriptions: string[]): Promise<Record<string, CategoryId>> {
-  const body = JSON.stringify({
-    model: 'gpt-4o-mini',
-    messages: [
-      { role: 'system', content: SYSTEM_PROMPT },
-      { role: 'user', content: JSON.stringify(descriptions) },
-    ],
-    response_format: { type: 'json_object' },
-    temperature: 0,
-    max_tokens: 1024,
-    stream: true,
-  });
-
-  return new Promise((resolve) => {
-    const xhr = new XMLHttpRequest();
-    xhr.open('POST', OPENAI_ENDPOINT);
-    xhr.setRequestHeader('Content-Type', 'application/json');
-    xhr.setRequestHeader('Authorization', `Bearer ${OPENAI_API_KEY}`);
-    xhr.timeout = 30_000;
-
-    let lastLength = 0;
-    let accContent = '';
-    let lineBuffer = '';
-    let settled = false;
-
-    const parse = () => {
-      lineBuffer += xhr.responseText.slice(lastLength);
-      lastLength = xhr.responseText.length;
-      const lines = lineBuffer.split('\n');
-      lineBuffer = lines.pop() ?? '';
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed.startsWith('data: ')) continue;
-        const data = trimmed.slice(6);
-        if (data === '[DONE]') { settled = true; resolve(safeParseCategories(accContent)); return; }
-        try { accContent += JSON.parse(data).choices?.[0]?.delta?.content ?? ''; } catch { /* skip */ }
-      }
-    };
-
-    xhr.onprogress = parse;
-    xhr.onload = () => { if (settled) return; parse(); resolve(safeParseCategories(accContent)); };
-    xhr.ontimeout = () => resolve({});
-    xhr.onerror = () => resolve({});
-    xhr.send(body);
-  });
-}
 
 async function callGemini(descriptions: string[]): Promise<Record<string, CategoryId>> {
   const body = JSON.stringify({
@@ -143,7 +94,6 @@ function safeParseCategories(raw: string): Record<string, CategoryId> {
  */
 export async function enrichCategories(
   result: ParseResult,
-  provider: 'openai' | 'gemini',
 ): Promise<ParseResult> {
   const unknownDescs = [
     ...new Set(
@@ -161,12 +111,7 @@ export async function enrichCategories(
   console.log(`[CatAI] ${unknownDescs.length} merchant sconosciuti → AI`);
   console.log('[CatAI] payload:', JSON.stringify(unknownDescs));
 
-  const mapping =
-    provider === 'openai' && OPENAI_API_KEY
-      ? await callOpenAI(unknownDescs)
-      : GEMINI_API_KEY
-        ? await callGemini(unknownDescs)
-        : {};
+  const mapping = GEMINI_API_KEY ? await callGemini(unknownDescs) : {};
 
   console.log('[CatAI] mapping ricevuto:', JSON.stringify(mapping));
 

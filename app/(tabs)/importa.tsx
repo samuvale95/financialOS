@@ -19,7 +19,6 @@ import { Button } from '../../components/ui/Button';
 import { useSettings } from '../../contexts/SettingsContext';
 import { useData } from '../../contexts/DataContext';
 import { parseWithGemini, hasGemini } from '../../utils/geminiParser';
-import { parseWithOpenAI, hasOpenAI } from '../../utils/openaiParser';
 import { getCachedResult, setCachedResult } from '../../utils/aiParserCache';
 import { parseWithSmartParser } from '../../utils/smartImportParser';
 import { logImportEvent } from '../../utils/importAnalytics';
@@ -32,13 +31,8 @@ type ImportPhase = 'idle' | 'queue' | 'background' | 'done' | 'error';
 
 export default function ImportaScreen() {
   const { settings } = useSettings();
-  const aiEnabled = settings.import.geminiParsing && (hasOpenAI || hasGemini);
-
-  const getParseFn = () => {
-    if (settings.import.aiProvider === 'openai' && hasOpenAI) return parseWithOpenAI;
-    if (hasGemini) return parseWithGemini;
-    return parseWithOpenAI;
-  };
+  const aiEnabled = settings.import.geminiParsing && hasGemini;
+  const getParseFn = () => parseWithGemini;
 
   // Stores fresh AI results (not from cache) for the save-to-cache prompt
   const freshAiResultsRef = useRef<Map<string, ParseResult>>(new Map());
@@ -122,7 +116,7 @@ export default function ImportaScreen() {
   const handleStartProcessing = () => {
     if (queuedFiles.length === 0) return;
     if (!aiEnabled) {
-      setErrorMsg('Configura una API key OpenAI o Gemini nelle impostazioni per usare il parser AI.');
+      setErrorMsg('Configura una API key Gemini nelle impostazioni per usare il parser AI.');
       setPhase('error');
       return;
     }
@@ -131,12 +125,10 @@ export default function ImportaScreen() {
     const baseParser = getParseFn();
     const useCache = settings.developer?.useAiCache ?? false;
     const importStrategy = (settings.developer?.importStrategy ?? 'smart') as ImportStrategy;
-    const provider = settings.import.aiProvider;
 
     const parseFn = async (uri: string, name: string): Promise<ParseResult> => {
       const t0 = Date.now();
-      const logModel = provider === 'openai' ? 'gpt-4o-mini' : 'gemini-2.5-flash';
-      startLogSession(name, logModel, importStrategy);
+      startLogSession(name, 'gemini-2.5-flash', importStrategy);
 
       let result: ParseResult;
 
@@ -144,7 +136,6 @@ export default function ImportaScreen() {
         if (importStrategy === 'smart') {
           result = await parseWithSmartParser(uri, name, {
             useCache,
-            provider,
             fullAIParser: baseParser,
             onSchemaLearned: (bankName) =>
               console.log('[Import] nuovo schema salvato per:', bankName),
@@ -181,7 +172,7 @@ export default function ImportaScreen() {
 
       const elapsed = Date.now() - t0;
       const tier: ImportTier = result._tier ?? 'L3_full_ai';
-      const model: ImportModel = tier === 'L1_cache' ? 'none' : provider;
+      const model: ImportModel = tier === 'L1_cache' ? 'none' : 'gemini';
 
       await finishLogSession(result.transactions, elapsed, tier);
 
@@ -349,9 +340,7 @@ export default function ImportaScreen() {
             <Text style={styles.aiNoteText}>
               {(settings.developer?.importStrategy ?? 'smart') === 'smart'
                 ? 'Smart: schema locale + AI solo se necessario'
-                : settings.import.aiProvider === 'openai' && hasOpenAI
-                  ? 'Full AI: ChatGPT 4o-mini analizzerà ogni file'
-                  : 'Full AI: Gemini 2.5 Flash analizzerà ogni file'}
+                : 'Full AI: Gemini 2.5 Flash analizzerà ogni file'}
             </Text>
           </View>
 

@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useRef, useMemo } from 'react';
+import React, { useState, useCallback, useRef, useMemo, useEffect } from 'react';
 import {
   View,
   Text,
@@ -18,6 +18,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import { Colors, Typography, Radius, Spacing } from '../constants/theme';
@@ -36,7 +37,6 @@ import { parseCSV } from '../utils/parsers';
 import { parseExcel } from '../utils/excelParser';
 import { parsePDF } from '../utils/pdfParser';
 import { hasGemini, parseWithGemini } from '../utils/geminiParser';
-import { hasOpenAI, parseWithOpenAI } from '../utils/openaiParser';
 import { sendImportNotification } from '../utils/notifications';
 import { parseWithSmartParser } from '../utils/smartImportParser';
 import { logImportEvent } from '../utils/importAnalytics';
@@ -868,10 +868,38 @@ function IncomeForm({ onAdd }: { onAdd: (s: IncomeSource) => void }) {
 
 // ── Main wizard ───────────────────────────────────────────────────────────────
 
+// ── Draft persistence ─────────────────────────────────────────────────────────
+
+const DRAFT_KEY = 'onboarding_draft_v1';
+
+const STEP_NAMES: Record<number, string> = {
+  0:  'Benvenuto',
+  1:  'Profilo personale',
+  2:  'Dove vivi',
+  3:  'Situazione lavorativa',
+  4:  'Entrate mensili',
+  5:  'Conti bancari',
+  6:  'Obiettivo principale',
+  7:  'Stile di vita',
+  8:  'Criptovalute',
+  9:  'Investimenti',
+  10: 'Budget',
+  11: 'Import estratti conto',
+  12: 'Riepilogo',
+};
+
+function getStepName(step: number): string {
+  return STEP_NAMES[step] ?? `Step ${step}`;
+}
+
+// ── Component ─────────────────────────────────────────────────────────────────
+
 export default function OnboardingScreen() {
   const { addAccount, addAsset, addTransactions, setBudgetLimit, setMerchantRule, addGoal } = useData();
   const { settings } = useSettings();
   const [state, setState] = useState<WizardState>(INIT_STATE);
+  const [showResumeDialog, setShowResumeDialog] = useState(false);
+  const [draftState, setDraftState] = useState<WizardState | null>(null);
   const [importing, setImporting] = useState<string | null>(null); // null = idle, string = current filename
   const [regionSearch, setRegionSearch] = useState('');
   const [showRegionPicker, setShowRegionPicker] = useState(false);
@@ -885,6 +913,31 @@ export default function OnboardingScreen() {
 
   const set = useCallback((patch: Partial<WizardState>) =>
     setState(s => ({ ...s, ...patch })), []);
+
+  // ── Draft: load on mount ──────────────────────────────────────────────────
+  useEffect(() => {
+    AsyncStorage.getItem(DRAFT_KEY).then((raw) => {
+      if (!raw) return;
+      try {
+        const parsed: WizardState = JSON.parse(raw);
+        if (parsed.step > 0 && parsed.step < 13) {
+          setDraftState(parsed);
+          setShowResumeDialog(true);
+        }
+      } catch {
+        AsyncStorage.removeItem(DRAFT_KEY);
+      }
+    });
+  }, []);
+
+  // ── Draft: save on every step change ─────────────────────────────────────
+  useEffect(() => {
+    if (state.step <= 0 || state.step >= 13) return;
+    // Exclude large imported transaction data from the draft to keep storage small.
+    // The user will re-import files from step 11.
+    const draft = { ...state, importedFiles: [] };
+    AsyncStorage.setItem(DRAFT_KEY, JSON.stringify(draft)).catch(() => {});
+  }, [state.step]);
 
   const nextStep = useCallback(() => {
     Keyboard.dismiss();
@@ -953,100 +1006,104 @@ export default function OnboardingScreen() {
       });
       if (res.canceled || !res.assets?.length) return;
 
-      const hasAnyAI = hasOpenAI || hasGemini;
-      let totalAdded = 0;
-      let errors = 0;
-
       const useCache = settings.developer?.useAiCache ?? false;
       const importStrategy = (settings.developer?.importStrategy ?? 'smart') as ImportStrategy;
-      const provider = settings.import.aiProvider;
-      const baseParser = hasOpenAI ? parseWithOpenAI : parseWithGemini;
+      const baseParser = parseWithGemini;
 
-      for (const asset of res.assets) {
-        setImporting(asset.name ?? 'file');
+      setImporting(res.assets.length > 1 ? `${res.assets.length} file in corso…` : (res.assets[0]?.name ?? 'file'));
+
+      const parseAsset = async (asset: (typeof res.assets)[0]) => {
         const name = (asset.name ?? '').toLowerCase();
-        try {
-          console.log('[Onboarding Import] hasOpenAI:', hasOpenAI, '| hasGemini:', hasGemini, '| strategia:', importStrategy, '| file:', asset.name);
-          const t0 = Date.now();
-          let result;
+        const t0 = Date.now();
+        console.log('[Onboarding Import] hasGemini:', hasGemini, '| strategia:', importStrategy, '| file:', asset.name);
 
-          if (hasAnyAI) {
-            const logModel = provider === 'openai' ? 'gpt-4o-mini' : 'gemini-2.5-flash';
-            startLogSession(asset.name ?? 'file', logModel, importStrategy);
-            try {
-              if (importStrategy === 'smart') {
-                result = await parseWithSmartParser(asset.uri, asset.name ?? 'file', {
-                  useCache,
-                  provider,
-                  fullAIParser: baseParser,
-                  onSchemaLearned: (bankName) =>
-                    console.log('[Onboarding] nuovo schema salvato per:', bankName),
-                });
-              } else {
-                // Full AI: same logic as importa.tsx full_ai path
-                const { getCachedResult, setCachedResult } = await import('../utils/aiParserCache');
-                if (useCache) {
-                  const cached = await getCachedResult(asset.name ?? 'file');
-                  if (cached) {
-                    result = { ...cached, _tier: 'L1_cache' as const };
-                  } else {
-                    const raw = await baseParser(asset.uri, asset.name ?? 'file');
-                    result = { ...raw, _tier: 'L3_full_ai' as const };
-                    await setCachedResult(asset.name ?? 'file', result);
-                  }
+        if (hasGemini) {
+          startLogSession(asset.name ?? 'file', 'gemini-2.5-flash', importStrategy);
+          let result;
+          try {
+            if (importStrategy === 'smart') {
+              result = await parseWithSmartParser(asset.uri, asset.name ?? 'file', {
+                useCache,
+                fullAIParser: baseParser,
+                onSchemaLearned: (bankName) =>
+                  console.log('[Onboarding] nuovo schema salvato per:', bankName),
+              });
+            } else {
+              const { getCachedResult, setCachedResult } = await import('../utils/aiParserCache');
+              if (useCache) {
+                const cached = await getCachedResult(asset.name ?? 'file');
+                if (cached) {
+                  result = { ...cached, _tier: 'L1_cache' as const };
                 } else {
                   const raw = await baseParser(asset.uri, asset.name ?? 'file');
                   result = { ...raw, _tier: 'L3_full_ai' as const };
+                  await setCachedResult(asset.name ?? 'file', result);
                 }
+              } else {
+                const raw = await baseParser(asset.uri, asset.name ?? 'file');
+                result = { ...raw, _tier: 'L3_full_ai' as const };
               }
-            } catch (err) {
-              const elapsed = Date.now() - t0;
-              const errMsg = err instanceof Error ? err.message : String(err);
-              await finishLogSession([], elapsed, undefined, errMsg);
-              throw err;
             }
-
+          } catch (err) {
             const elapsed = Date.now() - t0;
-            const tier: ImportTier = result._tier ?? 'L3_full_ai';
-            const model: ImportModel = tier === 'L1_cache' ? 'none' : provider;
-
-            await finishLogSession(result.transactions, elapsed, tier);
-
-            logImportEvent({
-              fileName: asset.name ?? 'file',
-              strategy: importStrategy,
-              tier,
-              model,
-              processingTimeMs: elapsed,
-              transactionsExtracted: result.transactions.length,
-              bankName: result.bankName,
-            }).catch(() => {});
-          } else if (name.endsWith('.pdf')) {
-            result = await parsePDF(asset.uri);
-          } else if (name.endsWith('.csv') || name.endsWith('.txt')) {
-            result = parseCSV(await FileSystem.readAsStringAsync(asset.uri));
-          } else {
-            result = await parseExcel(asset.uri);
+            const errMsg = err instanceof Error ? err.message : String(err);
+            await finishLogSession([], elapsed, undefined, errMsg);
+            throw err;
           }
+          const elapsed = Date.now() - t0;
+          const tier: ImportTier = result._tier ?? 'L3_full_ai';
+          const model: ImportModel = tier === 'L1_cache' ? 'none' : 'gemini';
+          await finishLogSession(result.transactions, elapsed, tier);
+          logImportEvent({
+            fileName: asset.name ?? 'file',
+            strategy: importStrategy,
+            tier,
+            model,
+            processingTimeMs: elapsed,
+            transactionsExtracted: result.transactions.length,
+            bankName: result.bankName,
+          }).catch(() => {});
+          return result;
+        } else if (name.endsWith('.pdf')) {
+          return await parsePDF(asset.uri);
+        } else if (name.endsWith('.csv') || name.endsWith('.txt')) {
+          return parseCSV(await FileSystem.readAsStringAsync(asset.uri));
+        } else {
+          return await parseExcel(asset.uri);
+        }
+      };
 
+      const outcomes = await Promise.allSettled(res.assets.map(parseAsset));
+
+      let totalAdded = 0;
+      let errors = 0;
+      const newFiles: ImportedFile[] = [];
+
+      outcomes.forEach((outcome, i) => {
+        const asset = res.assets[i];
+        if (outcome.status === 'fulfilled') {
+          const result = outcome.value;
           if (result.transactions.length === 0) {
             Alert.alert('Nessuna transazione', `"${asset.name}" non contiene transazioni valide.`);
-            continue;
+            return;
           }
-          const newFile: ImportedFile = {
-            id: `imp_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`,
+          newFiles.push({
+            id: `imp_${Date.now()}_${i}_${Math.random().toString(36).slice(2, 5)}`,
             fileName: asset.name ?? 'file',
             bankName: result.bankName,
             accountIndex: null,
             transactions: result.transactions,
-          };
-          setState(s => ({ ...s, importedFiles: [...s.importedFiles, newFile] }));
+          });
           totalAdded += result.transactions.length;
-        } catch (e) {
+        } else {
           errors++;
-          const msg = e instanceof Error ? e.message : String(e);
+          const msg = outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason);
           Alert.alert('Errore file', `"${asset.name}": ${msg.slice(0, 120)}`);
         }
+      });
+
+      if (newFiles.length > 0) {
+        setState(s => ({ ...s, importedFiles: [...s.importedFiles, ...newFiles] }));
       }
 
       if (res.assets.length > 1 || errors > 0) {
@@ -1080,6 +1137,7 @@ export default function OnboardingScreen() {
       const mergedForSave = mergeImportedFiles(state.importedFiles, accountIds);
       if (mergedForSave.length > 0) addTransactions(mergedForSave);
 
+      await AsyncStorage.removeItem(DRAFT_KEY);
       await saveOnboardingData({
         completed: true,
         completedAt: new Date().toISOString(),
@@ -1979,6 +2037,56 @@ export default function OnboardingScreen() {
     }
   };
 
+  // ── Resume dialog ─────────────────────────────────────────────────────────
+  if (showResumeDialog && draftState) {
+    const pct = Math.round((draftState.step / 12) * 100);
+    return (
+      <SafeAreaView style={s.safe} edges={['top', 'bottom']}>
+        <View style={s.resumeDialog}>
+          <View style={s.resumeIconWrap}>
+            <Ionicons name="bookmark" size={32} color={Colors.accent.primary} />
+          </View>
+          <Text style={s.resumeTitle}>Continua da dove eri rimasto</Text>
+          <Text style={s.resumeMessage}>
+            Hai completato il {pct}% del profilo (step {draftState.step} di 12).
+          </Text>
+
+          <View style={s.resumeSummary}>
+            <Text style={s.resumeLabel}>Ultimo step completato</Text>
+            <Text style={s.resumeValue}>{getStepName(draftState.step)}</Text>
+            <View style={s.resumeProgressBar}>
+              <View style={[s.resumeProgressFill, { width: `${pct}%` as any }]} />
+            </View>
+          </View>
+
+          <View style={s.resumeActions}>
+            <TouchableOpacity
+              style={s.resumeBtnSecondary}
+              activeOpacity={0.7}
+              onPress={() => {
+                AsyncStorage.removeItem(DRAFT_KEY);
+                setShowResumeDialog(false);
+                setDraftState(null);
+              }}
+            >
+              <Text style={s.resumeBtnSecondaryText}>Ricomincia da capo</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={s.resumeBtnPrimary}
+              activeOpacity={0.8}
+              onPress={() => {
+                setState(draftState);
+                setShowResumeDialog(false);
+              }}
+            >
+              <Text style={s.resumeBtnPrimaryText}>Continua →</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
   // ── Welcome step: full screen ─────────────────────────────────────────────
   if (state.step === 0) return renderStep() as React.ReactElement;
 
@@ -2461,4 +2569,91 @@ const s = StyleSheet.create({
   summaryCard: { alignItems: 'center', backgroundColor: Colors.bg.card, borderRadius: Radius.lg, borderWidth: 1, borderColor: Colors.border.default, padding: 16, minWidth: 100, gap: 4 },
   summaryCardValue: { ...Typography.bodyMedium, color: Colors.text.primary, fontWeight: '700' },
   summaryCardLabel: { ...Typography.caption, color: Colors.text.muted },
+
+  // Resume dialog
+  resumeDialog: {
+    flex: 1,
+    justifyContent: 'center',
+    paddingHorizontal: 24,
+    paddingVertical: 32,
+    gap: 16,
+  },
+  resumeIconWrap: {
+    width: 64,
+    height: 64,
+    borderRadius: 20,
+    backgroundColor: Colors.accent.primary + '18',
+    justifyContent: 'center',
+    alignItems: 'center',
+    alignSelf: 'center',
+    marginBottom: 4,
+  },
+  resumeTitle: {
+    ...Typography.h2,
+    color: Colors.text.primary,
+    textAlign: 'center',
+  },
+  resumeMessage: {
+    ...Typography.body,
+    color: Colors.text.secondary,
+    textAlign: 'center',
+  },
+  resumeSummary: {
+    backgroundColor: Colors.bg.card,
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+    borderColor: Colors.border.default,
+    padding: 16,
+    gap: 8,
+  },
+  resumeLabel: {
+    ...Typography.micro,
+    color: Colors.text.muted,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  resumeValue: {
+    ...Typography.h3,
+    color: Colors.text.primary,
+    fontWeight: '700',
+  },
+  resumeProgressBar: {
+    height: 6,
+    backgroundColor: Colors.bg.elevated,
+    borderRadius: 3,
+    overflow: 'hidden',
+    marginTop: 4,
+  },
+  resumeProgressFill: {
+    height: 6,
+    backgroundColor: Colors.accent.primary,
+    borderRadius: 3,
+  },
+  resumeActions: {
+    gap: 10,
+    marginTop: 8,
+  },
+  resumeBtnSecondary: {
+    paddingVertical: 14,
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+    borderColor: Colors.border.default,
+    alignItems: 'center',
+  },
+  resumeBtnSecondaryText: {
+    ...Typography.bodyMedium,
+    color: Colors.text.secondary,
+    fontWeight: '600',
+  },
+  resumeBtnPrimary: {
+    paddingVertical: 14,
+    borderRadius: Radius.lg,
+    backgroundColor: Colors.accent.primary,
+    alignItems: 'center',
+  },
+  resumeBtnPrimaryText: {
+    ...Typography.bodyMedium,
+    color: '#fff',
+    fontWeight: '700',
+  },
 });

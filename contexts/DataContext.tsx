@@ -185,7 +185,6 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
   const [isLoading, setIsLoading] = useState(true);
   const [importJobs, setImportJobs] = useState<ImportJob[]>([]);
   const parseJobFnsRef = useRef<Map<string, (uri: string, name: string) => Promise<ParseResult>>>(new Map());
-  const processingRef = useRef(false);
   const notificationSentRef = useRef(false);
 
   useEffect(() => {
@@ -500,46 +499,43 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
 
   const clearImportJobs = useCallback(() => {
     parseJobFnsRef.current.clear();
-    processingRef.current = false;
     notificationSentRef.current = false;
     setImportJobs([]);
   }, []);
 
-  // Process pending import jobs sequentially
+  // Process all pending import jobs in parallel
   useEffect(() => {
-    if (processingRef.current) return;
-    const pendingJob = importJobs.find(j => j.status === 'pending');
-    if (!pendingJob) return;
+    const pendingJobs = importJobs.filter(j => j.status === 'pending');
+    if (pendingJobs.length === 0) return;
 
-    const parseFn = parseJobFnsRef.current.get(pendingJob.id);
-    if (!parseFn) {
-      setImportJobs(prev => prev.map(j =>
-        j.id === pendingJob.id ? { ...j, status: 'error', error: 'Parser non trovato' } : j
-      ));
-      return;
-    }
-
-    processingRef.current = true;
+    // Mark all pending jobs as processing atomically before launching
     setImportJobs(prev => prev.map(j =>
-      j.id === pendingJob.id ? { ...j, status: 'processing' } : j
+      j.status === 'pending' ? { ...j, status: 'processing' } : j
     ));
 
-    parseFn(pendingJob.uri, pendingJob.fileName)
-      .then(result => {
-        const added = addTransactions(result.transactions as Omit<Transaction, 'id'>[]);
+    pendingJobs.forEach(job => {
+      const parseFn = parseJobFnsRef.current.get(job.id);
+      if (!parseFn) {
         setImportJobs(prev => prev.map(j =>
-          j.id === pendingJob.id ? { ...j, status: 'done', addedCount: added } : j
+          j.id === job.id ? { ...j, status: 'error', error: 'Parser non trovato' } : j
         ));
-      })
-      .catch(err => {
-        const msg = err instanceof Error ? err.message : String(err);
-        setImportJobs(prev => prev.map(j =>
-          j.id === pendingJob.id ? { ...j, status: 'error', error: msg } : j
-        ));
-      })
-      .finally(() => {
-        processingRef.current = false;
-      });
+        return;
+      }
+
+      parseFn(job.uri, job.fileName)
+        .then(result => {
+          const added = addTransactions(result.transactions as Omit<Transaction, 'id'>[]);
+          setImportJobs(prev => prev.map(j =>
+            j.id === job.id ? { ...j, status: 'done', addedCount: added } : j
+          ));
+        })
+        .catch(err => {
+          const msg = err instanceof Error ? err.message : String(err);
+          setImportJobs(prev => prev.map(j =>
+            j.id === job.id ? { ...j, status: 'error', error: msg } : j
+          ));
+        });
+    });
   }, [importJobs, addTransactions]);
 
   // Fire notification when all jobs have settled

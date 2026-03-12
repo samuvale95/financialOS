@@ -15,7 +15,6 @@ import { router } from 'expo-router';
 import { Colors, Typography, Radius, Spacing } from '../constants/theme';
 import { useSettings } from '../contexts/SettingsContext';
 import { hasGemini } from '../utils/geminiParser';
-import { hasOpenAI } from '../utils/openaiParser';
 import { useData } from '../contexts/DataContext';
 import { clearParserCache, getCacheStats } from '../utils/aiParserCache';
 import { ITALIAN_BANKS } from '../constants/italianBanks';
@@ -500,40 +499,15 @@ export default function SettingsScreen() {
             value={settings.import.manual}
             onToggle={(v) => updateSetting('import', 'manual', v)}
           />
-          {(hasOpenAI || hasGemini) && (
+          {hasGemini && (
             <>
               <View style={styles.separator} />
               <SettingRow
                 label="AI Parsing"
-                description="Usa l'AI per leggere e classificare i file importati"
+                description="Usa Gemini AI per leggere e classificare i file importati"
                 value={settings.import.geminiParsing}
                 onToggle={(v) => updateSetting('import', 'geminiParsing', v)}
               />
-              {settings.import.geminiParsing && hasOpenAI && hasGemini && (
-                <View style={styles.aiProviderRow}>
-                  <Text style={styles.aiProviderLabel}>Modello</Text>
-                  <View style={styles.aiProviderPills}>
-                    {([
-                      { id: 'openai', label: 'ChatGPT' },
-                      { id: 'gemini', label: 'Gemini' },
-                    ] as const).map((opt) => {
-                      const active = settings.import.aiProvider === opt.id;
-                      return (
-                        <TouchableOpacity
-                          key={opt.id}
-                          style={[styles.aiProviderPill, active && styles.aiProviderPillActive]}
-                          onPress={() => updateSetting('import', 'aiProvider', opt.id)}
-                          activeOpacity={0.7}
-                        >
-                          <Text style={[styles.aiProviderPillText, active && styles.aiProviderPillTextActive]}>
-                            {opt.label}
-                          </Text>
-                        </TouchableOpacity>
-                      );
-                    })}
-                  </View>
-                </View>
-              )}
             </>
           )}
         </Section>
@@ -941,20 +915,6 @@ const styles = StyleSheet.create({
     gap: Spacing.sm,
     paddingVertical: 14,
   },
-  aiProviderRow: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingHorizontal: 16, paddingVertical: 10,
-  },
-  aiProviderLabel: { ...Typography.bodyMedium, color: Colors.text.secondary },
-  aiProviderPills: { flexDirection: 'row', gap: 8 },
-  aiProviderPill: {
-    paddingHorizontal: 16, paddingVertical: 6, borderRadius: Radius.full,
-    backgroundColor: Colors.bg.elevated, borderWidth: 1, borderColor: Colors.border.default,
-  },
-  aiProviderPillActive: { backgroundColor: Colors.accent.primary, borderColor: Colors.accent.primary },
-  aiProviderPillText: { ...Typography.bodyMedium, color: Colors.text.secondary, fontWeight: '600' },
-  aiProviderPillTextActive: { color: '#fff' },
-
   resetLabel: {
     ...Typography.bodyMedium,
     color: Colors.semantic.danger,

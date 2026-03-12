@@ -16,6 +16,29 @@ import { CATEGORIES } from '../../constants/categories';
 import type { Transaction } from '../../types';
 import type { CategoryId } from '../../constants/categories';
 import { Button } from '../../components/ui/Button';
+import CategoryTrendSparkline from '../../components/spese/CategoryTrendSparkline';
+import type { MonthlyTrend } from '../../components/spese/CategoryTrendSparkline';
+
+// ── Trend helpers ─────────────────────────────────────────────────────────────
+
+function buildCategoryTrend(
+  transactions: Transaction[],
+  category: string,
+  selectedMonth: string,
+  months = 6,
+): MonthlyTrend[] {
+  const [sy, sm] = selectedMonth.split('-').map(Number);
+  const result: MonthlyTrend[] = [];
+  for (let i = months - 1; i >= 0; i--) {
+    const d = new Date(sy, sm - 1 - i, 1);
+    const monthKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    const amount = transactions
+      .filter((t) => t.date.startsWith(monthKey) && t.category === category && t.amount < 0)
+      .reduce((sum, t) => sum + Math.abs(t.amount), 0);
+    result.push({ month: monthKey, amount: Math.round(amount) });
+  }
+  return result;
+}
 
 function getAvailableMonths(transactions: Transaction[]): string[] {
   const months = new Set<string>();
@@ -55,7 +78,11 @@ const SORT_MODES: { key: SortMode; label: string; icon: string }[] = [
 
 // ── Category Breakdown component ──────────────────────────────────────────────
 
-function CategoryBreakdown({ transactions, selectedMonth }: { transactions: Transaction[]; selectedMonth: string }) {
+function CategoryBreakdown({ transactions, selectedMonth, allTransactions }: {
+  transactions: Transaction[];
+  selectedMonth: string;
+  allTransactions: Transaction[];
+}) {
   const monthExpenses = transactions.filter(
     (t) => t.amount < 0 && t.date.startsWith(selectedMonth)
   );
@@ -96,37 +123,44 @@ function CategoryBreakdown({ transactions, selectedMonth }: { transactions: Tran
         {byCategory.map(({ cat, total, count }) => {
           const catInfo = CATEGORIES[cat];
           const pct = totalOut > 0 ? (total / totalOut) * 100 : 0;
+          const trend = buildCategoryTrend(allTransactions, cat, selectedMonth);
           return (
             <View key={cat} style={cb.row}>
-              <View style={[cb.icon, { backgroundColor: catInfo?.bgColor ?? Colors.bg.elevated }]}>
-                <Ionicons
-                  name={(catInfo?.icon ?? 'help-circle') as any}
-                  size={16}
-                  color={catInfo?.color ?? Colors.text.muted}
-                />
-              </View>
-              <View style={cb.info}>
-                <View style={cb.infoTop}>
-                  <Text style={cb.catLabel} numberOfLines={1}>
-                    {catInfo?.label ?? cat}
-                  </Text>
-                  <Text style={cb.catAmount}>€{total.toFixed(0)}</Text>
+              {/* Main horizontal row */}
+              <View style={cb.rowMain}>
+                <View style={[cb.icon, { backgroundColor: catInfo?.bgColor ?? Colors.bg.elevated }]}>
+                  <Ionicons
+                    name={(catInfo?.icon ?? 'help-circle') as any}
+                    size={16}
+                    color={catInfo?.color ?? Colors.text.muted}
+                  />
                 </View>
-                <View style={cb.barRow}>
-                  <View style={cb.barBg}>
-                    <View
-                      style={[
-                        cb.barFill,
-                        {
-                          width: `${Math.min(100, pct)}%` as any,
-                          backgroundColor: catInfo?.color ?? Colors.accent.primary,
-                        },
-                      ]}
-                    />
+                <View style={cb.info}>
+                  <View style={cb.infoTop}>
+                    <Text style={cb.catLabel} numberOfLines={1}>
+                      {catInfo?.label ?? cat}
+                    </Text>
+                    <Text style={cb.catAmount}>€{total.toFixed(0)}</Text>
                   </View>
-                  <Text style={cb.txCount}>{count} tx</Text>
+                  <View style={cb.barRow}>
+                    <View style={cb.barBg}>
+                      <View
+                        style={[
+                          cb.barFill,
+                          {
+                            width: `${Math.min(100, pct)}%` as any,
+                            backgroundColor: catInfo?.color ?? Colors.accent.primary,
+                          },
+                        ]}
+                      />
+                    </View>
+                    <Text style={cb.txCount}>{count} tx</Text>
+                  </View>
                 </View>
               </View>
+
+              {/* 6-month trend sparkline */}
+              <CategoryTrendSparkline trend={trend} accentColor={catInfo?.color} />
             </View>
           );
         })}
@@ -428,7 +462,7 @@ export default function SpeseScreen() {
         showsVerticalScrollIndicator={false}
       >
         {activeTab === 'categories' ? (
-          <CategoryBreakdown transactions={monthTransactions} selectedMonth={selectedMonth} />
+          <CategoryBreakdown transactions={monthTransactions} selectedMonth={selectedMonth} allTransactions={transactions} />
         ) : monthTransactions.length === 0 ? (
           <View style={styles.emptyCard}>
             <Ionicons name="receipt-outline" size={48} color={Colors.text.muted} />
@@ -741,13 +775,16 @@ const cb = StyleSheet.create({
     overflow: 'hidden',
   },
   row: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
     paddingHorizontal: 14,
     paddingVertical: 12,
     borderBottomWidth: 1,
     borderBottomColor: Colors.border.subtle,
+    gap: 10,
+  },
+  rowMain: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
   },
   icon: {
     width: 32,

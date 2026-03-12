@@ -587,48 +587,6 @@ function extractDates(row: PDFItem[]): { d1: string; d2: string } | null {
  * non-transaction line starting with a date-like string is kept (no data loss),
  * while being too narrow would silently drop entire pages of transactions.
  */
-const TX_DATE_RE = /^(?:\d{2}[./]\d{2}[./]\d{4}|\d{2}-\d{2}-\d{4}|\d{4}[-/]\d{2}[-/]\d{2})\s/;
-
-export async function extractTextFromPDF(uri: string): Promise<string> {
-  const { pages, widths } = await extractPDFItems(uri);
-
-  // Calibrate credit/debit column positions from the full document.
-  const allItems = pages.flat();
-  const avgWidth = widths.reduce((s, w) => s + w, 0) / (widths.length || 1);
-  const cols = calibrateColumns(allItems, avgWidth);
-
-  return pages
-    .map((pageItems) => {
-      const cleanItems = pageItems.filter((it) => !isNoiseItem(it.str));
-      const rowMap = groupIntoRows(cleanItems);
-      const lines = sortedRows(rowMap)
-        .map(([, row]) => {
-          const parts: string[] = [];
-          for (const it of row) {
-            // Tag monetary amounts with their column position.
-            const isAmt = AMT_RE.test(it.str) || AMT_RE_NOEURO.test(it.str.trim());
-            if (isAmt) {
-              const tag = it.x >= cols.creditMinX ? '[ACCREDITO]' : '[ADDEBITO]';
-              parts.push(`${tag} ${it.str}`);
-            } else {
-              parts.push(it.str);
-            }
-          }
-          return parts.join(' ').trim();
-        })
-        // Filter 1 (line-level): remove section headers, balance summaries, etc.
-        .filter((line) => line.length > 0 && !isNoiseLine(line));
-
-      // Filter 2 (page-level): skip pages that contain no transaction date rows
-      // (e.g. bank letterhead on page 1, legal T&C pages at the end).
-      const hasTransactions = lines.some((line) => TX_DATE_RE.test(line));
-      if (!hasTransactions) return null;
-
-      return lines.join('\n');
-    })
-    .filter((page): page is string => page !== null)
-    .join('\n--- PAGINA ---\n');
-}
 
 export async function parsePDF(uri: string): Promise<ParseResult> {
   console.log('[parsePDF] start, uri:', uri);
