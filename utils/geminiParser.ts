@@ -68,6 +68,9 @@ const PROMPT = `Sei un esperto analista di estratti conto bancari italiani. Il t
 REGOLE:
 1. Estrai ogni singola transazione (non perderne nessuna).
 2. amount: NEGATIVO per uscite/addebiti/pagamenti, POSITIVO per entrate/accrediti/stipendi/rimborsi/storni.
+   IMPORTANTE: nel testo troverai tag [ACCREDITO] o [ADDEBITO] davanti agli importi — indicano la colonna del documento.
+   [ACCREDITO] = entrata → amount POSITIVO. [ADDEBITO] = uscita → amount NEGATIVO.
+   Se il tag è assente, deduci il segno dal contesto (tipo operazione, causale).
 3. date: formato ISO YYYY-MM-DD. Se l'anno non è indicato esplicitamente, deducilo dal contesto del documento.
 4. description: breve, leggibile, in italiano, Title Case, max 60 caratteri (es. "Esselunga Via Dante", "Netflix Abbonamento", "Stipendio Marzo").
 5. merchant: solo il nome del brand/esercente, senza indirizzo, senza suffissi legali (Spa, Srl, ecc.). Title Case. Stringa vuota se non applicabile (es. accrediti stipendio, giroconti).
@@ -129,7 +132,14 @@ const PDF_CHUNK_CHARS = 18_000;
 /** Safety cap for single CSV/XLSX requests. */
 const CSV_MAX_CHARS = 30_000;
 
-/** Split PDF text at page boundaries into chunks fitting within maxChars. */
+/**
+ * Split PDF text at page boundaries into chunks fitting within maxChars.
+ * Sliding window: prepend the last OVERLAP_LINES lines of the previous chunk
+ * to handle cross-page transaction descriptions. Duplicates are removed by
+ * mergeChunkResults.
+ */
+const OVERLAP_LINES = 8;
+
 function buildPageChunks(fullText: string, maxChars: number): string[] {
   const pages = fullText.split('\n--- PAGINA ---\n');
   const chunks: string[] = [];
@@ -139,7 +149,8 @@ function buildPageChunks(fullText: string, maxChars: number): string[] {
     const candidate = current + sep + page;
     if (current && candidate.length > maxChars) {
       chunks.push(current);
-      current = page;
+      const tail = current.split('\n').slice(-OVERLAP_LINES).join('\n');
+      current = tail + '\n' + page;
     } else {
       current = candidate;
     }
@@ -167,7 +178,7 @@ function mergeChunkResults(results: ChunkResult[], fallbackBankName: string): Ch
     if (!parsingSchema && r.parsingSchema) parsingSchema = r.parsingSchema;
     totalSkipped += r.skipped;
     for (const tx of r.transactions) {
-      const k = `${tx.date}|${tx.amount}|${tx.description.slice(0, 30)}`;
+      const k = `${tx.date}|${tx.amount.toFixed(2)}|${tx.description.trim().toLowerCase().slice(0, 30)}`;
       if (!seen.has(k)) { seen.add(k); allTx.push(tx); }
     }
   }

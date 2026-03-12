@@ -59,6 +59,9 @@ const SYSTEM_PROMPT = `Sei un esperto analista di estratti conto bancari italian
 REGOLE:
 1. Estrai OGNI singola transazione senza eccezioni.
 2. amount: NEGATIVO per uscite/addebiti/pagamenti, POSITIVO per entrate/accrediti/stipendi/rimborsi/storni.
+   IMPORTANTE: nel testo troverai tag [ACCREDITO] o [ADDEBITO] davanti agli importi — indicano la colonna del documento.
+   [ACCREDITO] = entrata → amount POSITIVO. [ADDEBITO] = uscita → amount NEGATIVO.
+   Se il tag è assente, deduci il segno dal contesto (tipo operazione, causale).
 3. date: formato ISO YYYY-MM-DD. Deduci l'anno dal contesto se non esplicito.
 4. description: breve, leggibile, Title Case, max 60 caratteri.
 5. merchant: solo nome del brand, senza indirizzo né suffissi legali (Spa, Srl). Title Case. Vuoto per accrediti/giroconti.
@@ -92,10 +95,16 @@ const PDF_CHUNK_CHARS = 28_000;
 const CSV_MAX_CHARS = 40_000;
 
 /**
- * Split PDF text (pages separated by `\n--- PAGINA ---\n`) into chunks
- * that each fit within `maxChars`. Splits only at page boundaries so
- * transactions are never cut mid-line.
+ * Split PDF text (pages separated by `\n--- PAGINA ---\n`) into chunks that
+ * each fit within `maxChars`.
+ *
+ * Sliding window: when starting a new chunk, prepend the last OVERLAP_LINES
+ * lines of the previous chunk. This ensures that transactions whose description
+ * continues onto the next page are always visible together in at least one chunk.
+ * Duplicate transactions produced by the overlap are removed by mergeChunkResults.
  */
+const OVERLAP_LINES = 8;
+
 function buildPageChunks(fullText: string, maxChars: number): string[] {
   const pages = fullText.split('\n--- PAGINA ---\n');
   const chunks: string[] = [];
@@ -105,7 +114,8 @@ function buildPageChunks(fullText: string, maxChars: number): string[] {
     const candidate = current + sep + page;
     if (current && candidate.length > maxChars) {
       chunks.push(current);
-      current = page;
+      const tail = current.split('\n').slice(-OVERLAP_LINES).join('\n');
+      current = tail + '\n' + page;
     } else {
       current = candidate;
     }
@@ -134,7 +144,7 @@ function mergeChunkResults(results: ChunkResult[], fallbackBankName: string): Ch
     if (!parsingSchema && r.parsingSchema) parsingSchema = r.parsingSchema;
     totalSkipped += r.skipped;
     for (const tx of r.transactions) {
-      const k = `${tx.date}|${tx.amount}|${tx.description.slice(0, 30)}`;
+      const k = `${tx.date}|${tx.amount.toFixed(2)}|${tx.description.trim().toLowerCase().slice(0, 30)}`;
       if (!seen.has(k)) { seen.add(k); allTx.push(tx); }
     }
   }

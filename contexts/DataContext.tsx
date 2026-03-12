@@ -266,9 +266,11 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
   const addTransactions = useCallback((ts: Omit<Transaction, 'id'>[]): number => {
     let added = 0;
     setTransactions((prev) => {
-      const existingKeys = new Set(prev.map((t) => `${t.date}|${t.amount}|${t.description}`));
+      const txKey = (date: string, amount: number, desc: string) =>
+        `${date}|${amount.toFixed(2)}|${desc.trim().toLowerCase().slice(0, 30)}`;
+      const existingKeys = new Set(prev.map((t) => txKey(t.date, t.amount, t.description)));
       const newOnes = ts
-        .filter((t) => !existingKeys.has(`${t.date}|${t.amount}|${t.description}`))
+        .filter((t) => !existingKeys.has(txKey(t.date, t.amount, t.description)))
         .map((t) => {
           const key = getMerchantKey(t);
           const brand = extractBrand(t);

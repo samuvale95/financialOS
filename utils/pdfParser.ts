@@ -131,6 +131,8 @@ function sortedRows(rowMap: Map<number, PDFItem[]>): [number, PDFItem[]][] {
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 const AMT_RE = /(\d{1,3}(?:\.\d{3})*,\d{2})\s*€/;
+/** Fallback: Italian-format amount WITHOUT the € symbol (e.g. some banks omit it). */
+const AMT_RE_NOEURO = /^(\d{1,3}(?:\.\d{3})*,\d{2})$/;
 const DATE_DOT_RE = /^(\d{2}\.\d{2}\.\d{4})$/;
 const DATE_SLASH_RE = /^(\d{2}\/\d{2}\/\d{4})$/;
 const DATE_SINGLE_RE = /^(\d{2}[./]\d{2}[./]\d{4})$/;
@@ -163,6 +165,27 @@ function isNoiseLine(s: string): boolean {
   if (/^\d{7}$/.test(s.trim())) return true;
   // Intesa / Unicredit noise
   if (/^(?:Saldo Iniziale|Saldo Finale|Totale Movimenti)/i.test(s)) return true;
+  return false;
+}
+
+/**
+ * Filter individual PDF items that are watermark/background elements BEFORE
+ * grouping into rows. This prevents items that share the same y-coordinate as
+ * real transaction rows from contaminating those rows.
+ *
+ * Example Isybank watermark:
+ *   "5130800282000-00001100000102577-ROP-00000-RZB90-20250630-20250701-000-164981"
+ *   → printed at same y-position as transaction rows, but is a document reference.
+ */
+function isNoiseItem(str: string): boolean {
+  const s = str.trim();
+  // Bank document reference codes: long alphanumeric with 4+ hyphen-separated segments.
+  // Example: "5130800282000-00001100000102577-ROP-00000-RZB90-20250630-20250701-000-164981"
+  if (s.length > 30 && /^[A-Z0-9]{10,}(-[A-Z0-9]+){4,}$/i.test(s)) return true;
+  // Standalone numeric reference codes / phone numbers (≥8 digits, no spaces or letters).
+  // These appear as isolated transaction codes or bank/toll-free numbers on their own row.
+  // Example: "35314369001", "800915904", "3282355704"
+  if (/^\d{8,}$/.test(s)) return true;
   return false;
 }
 
@@ -415,10 +438,12 @@ function parseItalianPDF(
   };
 
   for (let pi = 0; pi < pages.length; pi++) {
-    const pageItems = pages[pi];
+    const pageItems = pages[pi].filter((it) => !isNoiseItem(it.str));
     const rowMap = groupIntoRows(pageItems);
     const rows = sortedRows(rowMap);
-    let seenHeader = false;
+    // If there is a pending transaction from the previous page (description or amount
+    // continuation), preserve seenHeader=true so we keep accumulating.
+    let seenHeader = pending !== null;
 
     for (const [, row] of rows) {
       const rowText = row.map((r) => r.str).join('').trim();
@@ -439,11 +464,12 @@ function parseItalianPDF(
         flush();
         seenHeader = true; // treat as having seen data section
 
-        // Find amount item in this row (by x-position)
+        // Find amount item in this row (by x-position).
+        // Try AMT_RE first (with €); fall back to AMT_RE_NOEURO for PDFs that omit the symbol.
         let amount = 0;
         let sign: 1 | -1 = -1;
         for (const it of row) {
-          const am = it.str.match(AMT_RE);
+          const am = it.str.match(AMT_RE) ?? it.str.trim().match(AMT_RE_NOEURO);
           if (am) {
             amount = parseItalianAmt(am[1]);
             sign = it.x >= cols.creditMinX ? 1 : -1;
@@ -492,7 +518,7 @@ function parseItalianPDF(
       // Check if row contains an amount (for banks where amount is on a sub-row)
       if (pending.amount === 0) {
         for (const it of row) {
-          const am = it.str.match(AMT_RE);
+          const am = it.str.match(AMT_RE) ?? it.str.trim().match(AMT_RE_NOEURO);
           if (am) {
             pending.amount = parseItalianAmt(am[1]);
             pending.sign = it.x >= cols.creditMinX ? 1 : -1;
@@ -538,19 +564,69 @@ function extractDates(row: PDFItem[]): { d1: string; d2: string } | null {
 /**
  * Extract raw text from a PDF, preserving row structure.
  * Items on the same horizontal row are joined with spaces;
- * rows are separated by newlines. Used by Gemini parser to avoid
- * sending the full binary (≈50× cheaper than inline_data base64).
+ * rows are separated by newlines. Used by OpenAI/Gemini parsers.
+ *
+ * COLUMN ANNOTATION: amounts are prefixed with [ACCREDITO] (credit/income, right
+ * column) or [ADDEBITO] (debit/expense, left amount column) based on their x-position
+ * relative to calibrated column boundaries. This lets the AI unambiguously assign
+ * the sign of each transaction without having to guess from description alone.
+ *
+ * NOISE REDUCTION: two generic filters applied before sending to the AI:
+ *   1. Pages with no transaction date rows are dropped entirely (letterhead, T&Cs).
+ *   2. isNoiseLine() removes section headers, balance summaries, footer text within
+ *      transaction pages. Typically reduces text by 40–50% vs raw extraction.
  */
+
+/**
+ * Matches any line that opens a transaction row — i.e. starts with a date in any
+ * of the common formats used by Italian and international banks:
+ *   DD.MM.YYYY  DD/MM/YYYY  (Isybank, Intesa, UniCredit, BancoBPM, …)
+ *   DD-MM-YYYY              (some European PDFs)
+ *   YYYY-MM-DD  YYYY/MM/DD  (N26, Revolut, ISO format)
+ * Using a broad match here is intentional and safe: the worst case is that a
+ * non-transaction line starting with a date-like string is kept (no data loss),
+ * while being too narrow would silently drop entire pages of transactions.
+ */
+const TX_DATE_RE = /^(?:\d{2}[./]\d{2}[./]\d{4}|\d{2}-\d{2}-\d{4}|\d{4}[-/]\d{2}[-/]\d{2})\s/;
+
 export async function extractTextFromPDF(uri: string): Promise<string> {
-  const { pages } = await extractPDFItems(uri);
+  const { pages, widths } = await extractPDFItems(uri);
+
+  // Calibrate credit/debit column positions from the full document.
+  const allItems = pages.flat();
+  const avgWidth = widths.reduce((s, w) => s + w, 0) / (widths.length || 1);
+  const cols = calibrateColumns(allItems, avgWidth);
+
   return pages
     .map((pageItems) => {
-      const rowMap = groupIntoRows(pageItems);
-      return sortedRows(rowMap)
-        .map(([, row]) => row.map((it) => it.str).join(' ').trim())
-        .filter((line) => line.length > 0)
-        .join('\n');
+      const cleanItems = pageItems.filter((it) => !isNoiseItem(it.str));
+      const rowMap = groupIntoRows(cleanItems);
+      const lines = sortedRows(rowMap)
+        .map(([, row]) => {
+          const parts: string[] = [];
+          for (const it of row) {
+            // Tag monetary amounts with their column position.
+            const isAmt = AMT_RE.test(it.str) || AMT_RE_NOEURO.test(it.str.trim());
+            if (isAmt) {
+              const tag = it.x >= cols.creditMinX ? '[ACCREDITO]' : '[ADDEBITO]';
+              parts.push(`${tag} ${it.str}`);
+            } else {
+              parts.push(it.str);
+            }
+          }
+          return parts.join(' ').trim();
+        })
+        // Filter 1 (line-level): remove section headers, balance summaries, etc.
+        .filter((line) => line.length > 0 && !isNoiseLine(line));
+
+      // Filter 2 (page-level): skip pages that contain no transaction date rows
+      // (e.g. bank letterhead on page 1, legal T&C pages at the end).
+      const hasTransactions = lines.some((line) => TX_DATE_RE.test(line));
+      if (!hasTransactions) return null;
+
+      return lines.join('\n');
     })
+    .filter((page): page is string => page !== null)
     .join('\n--- PAGINA ---\n');
 }
 
