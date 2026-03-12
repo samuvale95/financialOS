@@ -1,6 +1,7 @@
 import type { SpendingAnalysis, CategoryAnalysis } from './spendingAnalyzer';
-import type { InsightProfile } from './insightProfile';
+import type { InsightProfile, CategoryTrend } from './insightProfile';
 import type { FiscalProfile, Transaction } from '../types';
+import type { SpendingAnomaly } from './anomalyDetector';
 import { calculateEstimated730Refund, calculateForfettarioNetto } from './taxCalculator';
 
 export interface PersistentInsight {
@@ -36,9 +37,28 @@ export interface CoachQuestion {
   options: QuestionOption[];
 }
 
+// ── Historical context helper ─────────────────────────────────────────────────
+
+/**
+ * Returns a short Italian string describing average monthly spend for a category,
+ * based on the CategoryTrend stored in the profile. Empty string if no data.
+ * Intended to be appended to question / recommendation bodies.
+ */
+export function getHistoricalContext(profile: InsightProfile, category: string): string {
+  const trend: CategoryTrend | undefined = profile.categoryTrends?.find(
+    (t) => t.category === category,
+  );
+  if (!trend || trend.averageMonthly <= 0) return '';
+  return `Negli ultimi mesi qui spendi in media €${Math.round(trend.averageMonthly)}.`;
+}
+
 // ── Persistent insights ───────────────────────────────────────────────────────
 
-export function generatePersistentInsights(analysis: SpendingAnalysis): PersistentInsight[] {
+export function generatePersistentInsights(
+  analysis: SpendingAnalysis,
+  profile: InsightProfile,
+  anomalies: SpendingAnomaly[] = [],
+): PersistentInsight[] {
   const { monthIncome, totalExpenses, savingsRate, categories } = analysis;
   if (monthIncome === 0 && totalExpenses === 0) return [];
 
@@ -101,15 +121,78 @@ export function generatePersistentInsights(analysis: SpendingAnalysis): Persiste
     const projected = (totalExpenses / daysElapsed) * daysInMonth;
     const projColor = monthIncome > 0 ? (projected < monthIncome ? '#00D68F' : '#FF6B6B') : '#FFB347';
     const projTrend: PersistentInsight['trend'] = monthIncome > 0 ? (projected < monthIncome ? 'positive' : 'negative') : 'neutral';
+    const projectionMethod: 'linear' | 'weekday_weighted' = daysElapsed >= 7 ? 'weekday_weighted' : 'linear';
+    const methodNote = projectionMethod === 'weekday_weighted'
+      ? ' (proiezione pesata per pattern feriali/weekend)'
+      : '';
     insights.push({
       id: 'projection',
       icon: 'analytics',
       iconColor: projColor,
       title: `Proiezione: €${projected.toFixed(0)}`,
       body: monthIncome > 0
-        ? `Al ritmo attuale spenderai circa €${projected.toFixed(0)} entro fine mese${projected < monthIncome ? `, restando €${(monthIncome - projected).toFixed(0)} di risparmio.` : `. Supereresti il reddito di €${(projected - monthIncome).toFixed(0)}.`}`
-        : `Al ritmo attuale le uscite totali di questo mese saranno circa €${projected.toFixed(0)}.`,
+        ? `Al ritmo attuale spenderai circa €${projected.toFixed(0)} entro fine mese${projected < monthIncome ? `, restando €${(monthIncome - projected).toFixed(0)} di risparmio.` : `. Supereresti il reddito di €${(projected - monthIncome).toFixed(0)}.`}${methodNote}`
+        : `Al ritmo attuale le uscite totali di questo mese saranno circa €${projected.toFixed(0)}.${methodNote}`,
       trend: projTrend,
+    });
+  }
+
+  // 5. Trend personale risparmio (requires ≥3 snapshots)
+  const snapshots = profile.monthlySnapshots ?? [];
+  if (snapshots.length >= 3) {
+    const avgSavings = snapshots.reduce((s, snap) => s + snap.savingsRate, 0) / snapshots.length;
+    const delta = savingsRate - avgSavings;
+    if (delta > 5) {
+      insights.push({
+        id: 'savings_trend_personal',
+        icon: 'star',
+        iconColor: '#00D68F',
+        title: `Risparmio sopra la tua media`,
+        body: `Questo mese risparmi il ${savingsRate.toFixed(0)}%, ${delta.toFixed(0)} punti sopra la tua media storica del ${avgSavings.toFixed(0)}%. Ottimo trend personale!`,
+        trend: 'positive',
+      });
+    } else if (delta < -5) {
+      insights.push({
+        id: 'savings_trend_personal',
+        icon: 'trending-down',
+        iconColor: '#FFB347',
+        title: `Risparmio sotto la tua media`,
+        body: `La tua media storica è ${avgSavings.toFixed(0)}% di risparmio. Questo mese sei al ${savingsRate.toFixed(0)}%, ${(-delta).toFixed(0)} punti sotto. Tieni d'occhio le spese variabili.`,
+        trend: 'negative',
+      });
+    }
+  }
+
+  // 6. Miglioramento per categoria (categoryTrends === 'decreasing')
+  const improvingCats = (profile.categoryTrends ?? [])
+    .filter((t) => t.trend === 'decreasing')
+    .slice(0, 2); // cap at 2 to avoid clutter
+  for (const ct of improvingCats) {
+    const ca = categories.find((c) => (c.category as string) === ct.category);
+    const label = ca?.label ?? ct.category;
+    const currentNote = ca && ca.monthTotal > 0
+      ? ` Questo mese sei a €${ca.monthTotal.toFixed(0)}.`
+      : '';
+    insights.push({
+      id: `improving_${ct.category}`,
+      icon: ca?.icon ?? 'trending-down',
+      iconColor: '#00D68F',
+      title: `Stai migliorando in ${label}`,
+      body: `La tua media in ${label.toLowerCase()} è €${Math.round(ct.averageMonthly)}/mese e stai spendendo meno del solito.${currentNote} Mantieni il ritmo!`,
+      trend: 'positive',
+    });
+  }
+
+  // 7. High-severity anomalies — surfaced as warning insights (cap at 3 to avoid clutter)
+  const highAnomalies = anomalies.filter((a) => a.severity === 'high').slice(0, 3);
+  for (const anomaly of highAnomalies) {
+    insights.push({
+      id: `anomaly_${anomaly.type}_${anomaly.category}_${anomaly.date.slice(0, 7)}`,
+      icon: 'warning',
+      iconColor: '#FF6B6B',
+      title: anomaly.title,
+      body: anomaly.body,
+      trend: 'negative',
     });
   }
 
@@ -233,6 +316,55 @@ function diningQuestion(ca: CategoryAnalysis): CoachQuestion | null {
           type: 'info',
           title: 'Tienile separate per i rimborsi',
           body: `Se sono spese lavorative, annotale e richiedi rimborso. Potresti anche dedurle fiscalmente (verifica con il tuo commercialista).`,
+        },
+      },
+    ],
+  };
+}
+
+function diningReturningQuestion(
+  ca: CategoryAnalysis,
+  committedMonth: string, // YYYY-MM when user answered dining_too_much
+  currentMonth: string,
+): CoachQuestion | null {
+  const diningMerchants = ca.topMerchants.filter((m) =>
+    DINING_KEYWORDS.some((k) => m.name.toLowerCase().includes(k)),
+  );
+  const diningCount = diningMerchants.reduce((s, m) => s + m.count, 0);
+  if (diningCount < 4) return null;
+
+  const diningTotal = diningMerchants.reduce((s, m) => s + m.total, 0);
+  const monthLabel = new Date(committedMonth + '-01').toLocaleDateString('it-IT', {
+    month: 'long',
+    year: 'numeric',
+  });
+
+  return {
+    id: `q_dining_returning_${ca.category}_${currentMonth}`,
+    category: ca.category,
+    priority: 72,
+    title: `Ristoranti: di nuovo in aumento`,
+    body: `A ${monthLabel} avevi detto che stavi esagerando con il mangiare fuori. Questo mese sei tornato a €${diningTotal.toFixed(0)} (${diningCount} uscite). Come mai?`,
+    icon: 'restaurant',
+    iconColor: '#FF9500',
+    options: [
+      {
+        label: 'Mi sono perso',
+        tag: 'dining_relapsed',
+        recommendation: {
+          type: 'action',
+          title: 'Riparti dal piano',
+          body: `Succede. Fissa un massimo settimanale (es. 2 uscite), metti un promemoria venerdì per non superarlo. Risparmio potenziale: €${Math.round(diningTotal * 0.35)}/mese.`,
+          potentialSaving: Math.round(diningTotal * 0.35),
+        },
+      },
+      {
+        label: 'Periodo particolare',
+        tag: 'dining_special_period',
+        recommendation: {
+          type: 'positive',
+          title: 'Ci stanno le eccezioni',
+          body: `Va bene per questo mese. Controlla nei prossimi 2 mesi se il trend si stabilizza o se hai bisogno di aggiornare il budget.`,
         },
       },
     ],
@@ -368,8 +500,18 @@ function lowSavingsQuestion(
   savingsRate: number,
   totalExpenses: number,
   month: string,
+  historyNote: string | null = null,
 ): CoachQuestion | null {
   if (savingsRate >= 10 || totalExpenses === 0) return null;
+
+  let body: string;
+  if (savingsRate <= 0) {
+    body = `Questo mese le uscite superano il reddito importato. Controlla se tutti i movimenti in entrata sono stati caricati correttamente.`;
+  } else if (historyNote) {
+    body = historyNote;
+  } else {
+    body = `Stai risparmiando solo il ${Math.round(savingsRate)}% del reddito. L'obiettivo ideale è almeno il 20%. Da dove vorresti iniziare a ridurre?`;
+  }
 
   return {
     id: `q_savings_low_${month}`,
@@ -379,10 +521,7 @@ function lowSavingsQuestion(
       savingsRate <= 0
         ? 'Le spese superano il reddito registrato'
         : `Risparmio solo al ${Math.round(savingsRate)}%`,
-    body:
-      savingsRate <= 0
-        ? `Questo mese le uscite superano il reddito importato. Controlla se tutti i movimenti in entrata sono stati caricati correttamente.`
-        : `Stai risparmiando solo il ${Math.round(savingsRate)}% del reddito. L'obiettivo ideale è almeno il 20%. Da dove vorresti iniziare a ridurre?`,
+    body,
     icon: 'warning',
     iconColor: '#FF6B6B',
     options: [
@@ -601,8 +740,32 @@ export function generateCoachQuestions(
   const isAnswered = (id: string) =>
     !!profile.answeredQuestions[id] || !!profile.dismissedQuestions[id];
 
+  // ── Savings history note ────────────────────────────────────────────────────
+  // If user previously committed to saving_improving on a past q_savings_low_* and
+  // savings rate has since changed, personalise the current question body.
+  let savingsHistoryNote: string | null = null;
+  const pastSavingsEntry = Object.entries(profile.answeredQuestions)
+    .filter(([id, a]) => id.startsWith('q_savings_low_') && a.tag === 'savings_improving')
+    .sort(([idA], [idB]) => idB.localeCompare(idA)) // most recent first
+    [0] ?? null;
+  if (pastSavingsEntry) {
+    const [pastId, _] = pastSavingsEntry;
+    const pastMonth = pastId.replace('q_savings_low_', '');
+    const pastSnapshot = profile.monthlySnapshots?.find((s) => s.month === pastMonth);
+    if (pastSnapshot) {
+      const then = pastSnapshot.savingsRate.toFixed(0);
+      const now = analysis.savingsRate.toFixed(0);
+      if (analysis.savingsRate > pastSnapshot.savingsRate) {
+        savingsHistoryNote = `Stai migliorando! Da ${pastMonth} (${then}%) sei salito al ${now}% — continua così, punta al 20%.`;
+      } else {
+        const pastMonthLabel = new Date(pastMonth + '-01').toLocaleDateString('it-IT', { month: 'long', year: 'numeric' });
+        savingsHistoryNote = `A ${pastMonthLabel} avevi detto che stavi cercando di migliorare (eri al ${then}%). Ora sei al ${now}% — ripartiamo insieme?`;
+      }
+    }
+  }
+
   // Global: low savings check (versioned monthly so "Mese difficile" can re-surface next month)
-  const savingsQ = lowSavingsQuestion(analysis.savingsRate, analysis.totalExpenses, month);
+  const savingsQ = lowSavingsQuestion(analysis.savingsRate, analysis.totalExpenses, month, savingsHistoryNote);
   if (savingsQ && !isAnswered(savingsQ.id)) questions.push(savingsQ);
 
   // Per-category questions
@@ -624,6 +787,18 @@ export function generateCoachQuestions(
     for (const gen of generators) {
       const q = gen(ca);
       if (q && !isAnswered(q.id)) questions.push(q);
+    }
+
+    // ── Dining returning check ──────────────────────────────────────────────
+    // If user previously committed to reducing dining but spending is high again,
+    // surface a contextual returning question (monthly-versioned so it can resurface).
+    if (ca.category === 'food' || ca.category === 'entertainment') {
+      const diningAnswered = profile.answeredQuestions[`q_dining_${ca.category}`];
+      if (diningAnswered?.tag === 'dining_too_much') {
+        const committedMonth = diningAnswered.answeredAt.slice(0, 7);
+        const returningQ = diningReturningQuestion(ca, committedMonth, month);
+        if (returningQ && !isAnswered(returningQ.id)) questions.push(returningQ);
+      }
     }
   }
 

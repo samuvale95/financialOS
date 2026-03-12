@@ -21,6 +21,7 @@ export interface BudgetForecast {
   projectedEndOfMonth: number;
   daysUntilOverBudget: number | null;
   status: 'on_track' | 'at_risk' | 'over_pace';
+  projectionMethod: 'linear' | 'weekday_weighted';
 }
 
 export interface MerchantStat {
@@ -61,13 +62,14 @@ export interface ScoreFactor {
   points: number;
   max: number;
   icon: string;
+  description?: string;
 }
 
 export interface SpendingAnalysis {
   categories: CategoryAnalysis[];
   problemCategories: CategoryAnalysis[];
   warningCategories: CategoryAnalysis[];
-  score: number;
+  score: number | null; // null when totalExpenses < 10 (insufficient data)
   scoreFactors: ScoreFactor[];
   totalExpenses: number;
   monthIncome: number;
@@ -174,31 +176,127 @@ function computeScore(
   savingsRate: number,
   totalExpenses: number,
   lastMonthExpenses: number,
-): { score: number; factors: ScoreFactor[] } {
+  monthIncome: number,
+  allCategories: CategoryAnalysis[],
+): { score: number | null; factors: ScoreFactor[] } {
+  // Insufficient data — skip computation entirely
+  if (totalExpenses < 10) return { score: null, factors: [] };
+
   const factors: ScoreFactor[] = [];
-  let score = 40;
+  let score = 0; // baseline: earned, not assumed
 
-  // Savings rate: 0–25 pts
-  const savingsPts = Math.min(25, Math.round(Math.max(0, savingsRate) * 0.83));
-  factors.push({ label: 'Risparmio', points: savingsPts, max: 25, icon: 'trending-up' });
-  score += savingsPts;
+  // Savings rate: 0–25 pts (skip when income unknown)
+  if (monthIncome > 0) {
+    const savingsPts = Math.min(25, Math.round(Math.max(0, savingsRate) * 0.83));
+    factors.push({
+      label: 'Risparmio',
+      points: savingsPts,
+      max: 25,
+      icon: 'trending-up',
+      description: `Tasso di risparmio ${Math.round(savingsRate)}%`,
+    });
+    score += savingsPts;
+  }
 
-  // Budget adherence: –5 per over, –2 per warning, max –20
+  // Budget adherence: –5 per over-budget, –2 per warning, clamped at –20
   const budgetPenalty = Math.max(-20, -(problemCategories.length * 5 + warningCategories.length * 2));
-  factors.push({ label: 'Budget', points: budgetPenalty, max: 0, icon: 'pie-chart' });
+  factors.push({
+    label: 'Budget',
+    points: budgetPenalty,
+    max: 0,
+    icon: 'pie-chart',
+    description: budgetPenalty < 0
+      ? `${problemCategories.length} categorie sforat${problemCategories.length === 1 ? 'a' : 'e'}`
+      : 'Nessun budget sforato',
+  });
   score += budgetPenalty;
 
-  // Improving trend vs last month: +10
-  const trendPts = lastMonthExpenses > 0 && totalExpenses < lastMonthExpenses ? 10 : 0;
-  factors.push({ label: 'Tendenza', points: trendPts, max: 10, icon: 'analytics' });
+  // Improving trend vs last month (graded)
+  let trendPts = 0;
+  let trendDescription = 'Nessun dato mese precedente';
+  if (lastMonthExpenses > 0) {
+    const changePct = ((totalExpenses - lastMonthExpenses) / lastMonthExpenses) * 100;
+    if (changePct < -5) {
+      trendPts = 10;
+      trendDescription = `Spese -${Math.round(-changePct)}% vs mese scorso`;
+    } else if (changePct < -1) {
+      trendPts = 5;
+      trendDescription = `Spese -${Math.round(-changePct)}% vs mese scorso`;
+    } else {
+      trendDescription = `Spese ${changePct >= 0 ? '+' : ''}${Math.round(changePct)}% vs mese scorso`;
+    }
+  }
+  factors.push({ label: 'Tendenza', points: trendPts, max: 10, icon: 'analytics', description: trendDescription });
   score += trendPts;
 
-  // No extreme over-budget: +5 bonus if no category over 150%
-  const noCrisisPts = problemCategories.every((c) => c.budgetProgress < 1.5) && problemCategories.length === 0 ? 5 : 0;
-  factors.push({ label: 'Controllo', points: noCrisisPts, max: 5, icon: 'shield-checkmark' });
+  // No-crisis bonus: +5 if no category exceeds 120% of its budget
+  const noCrisisPts = allCategories.every((c) => c.budgetLimit === 0 || c.budgetProgress <= 1.2) ? 5 : 0;
+  factors.push({
+    label: 'Controllo',
+    points: noCrisisPts,
+    max: 5,
+    icon: 'shield-checkmark',
+    description: noCrisisPts > 0 ? 'Nessuna categoria oltre 120%' : 'Almeno una categoria oltre 120%',
+  });
   score += noCrisisPts;
 
   return { score: Math.min(100, Math.max(0, score)), factors };
+}
+
+/**
+ * Projects end-of-month category spend using weekday vs weekend daily averages.
+ * More accurate than a plain linear projection when spending patterns differ
+ * between working days and the weekend.
+ *
+ * @param monthTx     Expense transactions for the category in the current month
+ * @param daysElapsed Days elapsed so far (≥ 1)
+ * @param daysInMonth Total days in the current month
+ * @param today       Current date (used to classify each remaining day)
+ * @returns           Projected total spend by end of month (already-spent + remaining)
+ */
+function getWeekdayWeightedProjection(
+  monthTx: Transaction[],
+  daysElapsed: number,
+  daysInMonth: number,
+  today: Date,
+): number {
+  const year = today.getFullYear();
+  const month = today.getMonth(); // 0-indexed
+
+  // Count elapsed weekday and weekend calendar days (1 … daysElapsed)
+  let elapsedWeekdays = 0;
+  let elapsedWeekendDays = 0;
+  for (let d = 1; d <= daysElapsed; d++) {
+    const dow = new Date(year, month, d).getDay();
+    if (dow === 0 || dow === 6) elapsedWeekendDays++;
+    else elapsedWeekdays++;
+  }
+
+  // Count remaining weekday and weekend calendar days (daysElapsed+1 … daysInMonth)
+  let remWeekdays = 0;
+  let remWeekendDays = 0;
+  for (let d = daysElapsed + 1; d <= daysInMonth; d++) {
+    const dow = new Date(year, month, d).getDay();
+    if (dow === 0 || dow === 6) remWeekendDays++;
+    else remWeekdays++;
+  }
+
+  // Classify transaction spend by weekday / weekend
+  let weekdayTotal = 0;
+  let weekendTotal = 0;
+  for (const tx of monthTx) {
+    const dow = new Date(tx.date + 'T12:00:00').getDay();
+    if (dow === 0 || dow === 6) weekendTotal += Math.abs(tx.amount);
+    else weekdayTotal += Math.abs(tx.amount);
+  }
+
+  // Average daily spend per type; fall back to global rate if a type has no elapsed days
+  const globalDailyRate = (weekdayTotal + weekendTotal) / daysElapsed;
+  const avgWeekday = elapsedWeekdays > 0 ? weekdayTotal / elapsedWeekdays : globalDailyRate;
+  const avgWeekend = elapsedWeekendDays > 0 ? weekendTotal / elapsedWeekendDays : globalDailyRate;
+
+  const alreadySpent = weekdayTotal + weekendTotal; // identical to monthTotal
+  return alreadySpent + remWeekdays * avgWeekday + remWeekendDays * avgWeekend;
 }
 
 export function getBudgetForecast(budgets: Budget[], transactions: Transaction[]): BudgetForecast[] {
@@ -209,20 +307,27 @@ export function getBudgetForecast(budgets: Budget[], transactions: Transaction[]
 
   const monthTx = transactions.filter((t) => t.date.startsWith(thisMonth) && isExpense(t));
 
+  const useWeighted = daysElapsed >= 7;
+
   return budgets
     .filter((b) => b.limit > 0)
     .map((b) => {
       const cat = CATEGORIES[b.category];
-      const monthTotal = monthTx
-        .filter((t) => t.category === b.category)
-        .reduce((s, t) => s + Math.abs(t.amount), 0);
+      const catMonthTx = monthTx.filter((t) => t.category === b.category);
+      const monthTotal = catMonthTx.reduce((s, t) => s + Math.abs(t.amount), 0);
       if (monthTotal === 0) return null;
 
       const fractionUsed = monthTotal / b.limit;
       const fractionElapsed = daysElapsed / daysInMonth;
       const paceRatio = fractionUsed / fractionElapsed;
       const dailyRate = monthTotal / daysElapsed;
-      const projectedEndOfMonth = dailyRate * daysInMonth;
+
+      const projectedEndOfMonth = useWeighted
+        ? getWeekdayWeightedProjection(catMonthTx, daysElapsed, daysInMonth, today)
+        : dailyRate * daysInMonth;
+
+      const projectionMethod: BudgetForecast['projectionMethod'] =
+        useWeighted ? 'weekday_weighted' : 'linear';
 
       let daysUntilOverBudget: number | null = null;
       if (paceRatio > 1 && dailyRate > 0) {
@@ -243,6 +348,7 @@ export function getBudgetForecast(budgets: Budget[], transactions: Transaction[]
         projectedEndOfMonth,
         daysUntilOverBudget,
         status,
+        projectionMethod,
       } satisfies BudgetForecast;
     })
     .filter((f): f is BudgetForecast => f !== null && (f.status === 'at_risk' || f.status === 'over_pace'))
@@ -454,6 +560,8 @@ export function analyzeSpending(
     savingsRate,
     totalExpenses,
     lastMonthExpenses,
+    monthIncome,
+    categories,
   );
 
   return {

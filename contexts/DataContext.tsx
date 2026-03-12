@@ -28,9 +28,14 @@ import {
 import { calculateBudgets } from '../utils/budgetCalculator';
 import type { BudgetContext } from '../utils/budgetCalculator';
 import { refreshAssetIfStale } from '../utils/financialApi';
-import { getMerchantKey, getTaxInfo, extractBrand } from '../utils/categorizer';
+import { getMerchantKey, getTaxInfo } from '../utils/categorizer';
+import { resolveCategory } from '../utils/categoryResolver';
 import type { InsightProfile } from '../utils/insightProfile';
 import { EMPTY_PROFILE } from '../utils/insightProfile';
+import { analyzeSpending } from '../utils/spendingAnalyzer';
+import { updateProfileAfterMonth } from '../utils/profileUpdater';
+import { reconcileProfile } from '../utils/profileReconciler';
+import type { ReconciliationResult } from '../utils/profileReconciler';
 
 const DEFAULT_BUDGET_LIMITS: StoredBudget[] = [
   { id: 'b_groceries', category: 'groceries', limit: 300, period: 'monthly' },
@@ -158,6 +163,8 @@ interface AppData {
   refreshAssetPrices: () => Promise<void>;
   answerQuestion: (questionId: string, tag: string) => void;
   dismissQuestion: (questionId: string) => void;
+  refreshInsightProfile: () => void;
+  budgetReconciliation: ReconciliationResult[];
   resetAll: () => Promise<void>;
   importJobs: ImportJob[];
   enqueueImport: (files: { uri: string; name: string }[], parseFn: (uri: string, name: string) => Promise<ParseResult>) => void;
@@ -171,6 +178,7 @@ export interface ImportJob {
   status: 'pending' | 'processing' | 'done' | 'error';
   addedCount?: number;
   error?: string;
+  warning?: string;
 }
 
 const DataContext = createContext<AppData | null>(null);
@@ -189,6 +197,17 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
   const [importJobs, setImportJobs] = useState<ImportJob[]>([]);
   const parseJobFnsRef = useRef<Map<string, (uri: string, name: string) => Promise<ParseResult>>>(new Map());
   const notificationSentRef = useRef(false);
+  /** Mirrors `transactions` state; updated synchronously by addTransactionsCore so that
+   *  back-to-back queue tasks each see the accumulated result of the previous one. */
+  const transactionsRef = useRef<Transaction[]>([]);
+  /** Serialises batch-import writes so concurrent parse jobs never dedup against stale state. */
+  const importQueueRef = useRef<Promise<void>>(Promise.resolve());
+  // Usiamo useRef per evitare stale closure negli import asincroni: i job catturano
+  // addTransactionsCore una volta sola, ma le regole merchant/brand possono cambiare
+  // a runtime (es. dopo che l'AI ha imparato nuove regole durante lo stesso import).
+  // I ref vengono aggiornati ad ogni render prima che il job legga i valori.
+  const merchantRulesRef = useRef(merchantRules);
+  const brandRulesRef = useRef(brandRules);
 
   useEffect(() => {
     Promise.all([
@@ -203,6 +222,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       loadInsightProfile(),
     ]).then(async ([txs, buds, ass, gls, accs, subs, rules, brules, profile]) => {
       setTransactions(txs);
+      transactionsRef.current = txs;
       // Deduplicate assets by id in case of corrupted storage
       const seenAssets = new Set<string>();
       const dedupedAssets = ass.filter((a) => {
@@ -218,8 +238,9 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       setBrandRulesState(brules as Record<string, CategoryId>);
       setInsightProfile(profile);
       // Inizializza budgets: preferisci budgetCalculator se onboarding completato
+      let effectiveBuds: StoredBudget[];
       if (buds.length > 0) {
-        setStoredBudgets(buds);
+        effectiveBuds = buds;
       } else {
         const onboarding = await loadOnboardingData();
         const income = onboarding.monthlyIncome ?? 0;
@@ -232,22 +253,42 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
             dependents: onboarding.userProfile?.dependents,
             lifestyleProfile: onboarding.lifestyleProfile,
           };
-          const generated = calculateBudgets(
+          effectiveBuds = calculateBudgets(
             income,
             onboarding.goals ?? [],
             onboarding.effortLevel ?? 'moderato',
             ctx,
           );
-          setStoredBudgets(generated);
-          saveStoredBudgets(generated);
         } else {
-          setStoredBudgets(DEFAULT_BUDGET_LIMITS);
-          saveStoredBudgets(DEFAULT_BUDGET_LIMITS);
+          effectiveBuds = DEFAULT_BUDGET_LIMITS;
         }
+        saveStoredBudgets(effectiveBuds);
       }
+      setStoredBudgets(effectiveBuds);
+
+      // Refresh insight profile if it hasn't been updated for the current analysis month
+      const budgetsForAnalysis: Budget[] = effectiveBuds.map((b) => ({ ...b, spent: 0 }));
+      const initAnalysis = analyzeSpending(txs, budgetsForAnalysis);
+      if (
+        initAnalysis.totalExpenses >= 10 &&
+        (!profile.lastProfileUpdate || profile.lastProfileUpdate < initAnalysis.analysisMonth)
+      ) {
+        const updatedProfile = updateProfileAfterMonth(profile, initAnalysis);
+        setInsightProfile(updatedProfile);
+        saveInsightProfile(updatedProfile);
+      }
+
       setIsLoading(false);
     });
   }, []);
+
+  // Keep transactionsRef in sync when other code (setMerchantRule, updateTransactionCategories,
+  // resetAll) changes the transactions state via functional updaters.
+  useEffect(() => {
+    transactionsRef.current = transactions;
+  }, [transactions]);
+  useEffect(() => { merchantRulesRef.current = merchantRules; }, [merchantRules]);
+  useEffect(() => { brandRulesRef.current = brandRules; }, [brandRules]);
 
   const budgets = useMemo<Budget[]>(() => {
     const prefix = getCurrentMonthPrefix();
@@ -258,6 +299,11 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
         .reduce((s, t) => s + Math.abs(t.amount), 0),
     }));
   }, [storedBudgets, transactions]);
+
+  const budgetReconciliation = useMemo<ReconciliationResult[]>(
+    () => reconcileProfile(transactions, storedBudgets, 2, 20),
+    [transactions, storedBudgets],
+  );
 
   const monthSummary = useMemo<MonthSummary>(() => {
     const prefix = getCurrentMonthPrefix();
@@ -287,35 +333,58 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     });
   }, []);
 
-  const addTransactions = useCallback((ts: Omit<Transaction, 'id'>[]): number => {
-    let added = 0;
-    setTransactions((prev) => {
-      const txKey = (date: string, amount: number, desc: string) =>
-        `${date}|${amount.toFixed(2)}|${desc.trim().toLowerCase().slice(0, 30)}`;
-      const existingKeys = new Set(prev.map((t) => txKey(t.date, t.amount, t.description)));
-      const newOnes = ts
-        .filter((t) => !existingKeys.has(txKey(t.date, t.amount, t.description)))
-        .map((t) => {
-          const key = getMerchantKey(t);
-          const brand = extractBrand(t);
-          // Priority: exact merchant rule > brand-level rule > categorizer output
-          const ruleCategory = merchantRules[key] ?? (brand.length >= 4 ? brandRules[brand] : undefined);
-          const effectiveCategory = ruleCategory ?? t.category;
-          const taxInfo = getTaxInfo(t.description, effectiveCategory);
-          return {
-            ...t,
-            category: effectiveCategory,
-            ...taxInfo,
-            id: `t_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-          };
-        });
-      added = newOnes.length;
-      const next = [...newOnes, ...prev].sort((a, b) => b.date.localeCompare(a.date));
-      saveTransactions(next);
-      return next;
-    });
+  /**
+   * Core dedup+insert logic. Reads from transactionsRef synchronously so that
+   * back-to-back calls (serialised by the import queue) each see the accumulated
+   * state — not just the last React-committed snapshot.
+   */
+  const addTransactionsCore = useCallback((ts: Omit<Transaction, 'id'>[]): number => {
+    const prev = transactionsRef.current;
+    const txKey = (date: string, amount: number, desc: string) =>
+      `${date}|${amount.toFixed(2)}|${desc.trim().toLowerCase().slice(0, 30)}`;
+    const existingKeys = new Set(prev.map((t) => txKey(t.date, t.amount, t.description)));
+    const newOnes = ts
+      .filter((t) => !existingKeys.has(txKey(t.date, t.amount, t.description)))
+      .map((t) => {
+        const effectiveCategory = resolveCategory(
+          { description: t.description, merchant: t.merchant, aiCategory: t.category },
+          merchantRulesRef.current,
+          brandRulesRef.current,
+        );
+        const taxInfo = getTaxInfo(t.description, effectiveCategory);
+        return {
+          ...t,
+          category: effectiveCategory,
+          ...taxInfo,
+          id: `t_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        };
+      });
+    const added = newOnes.length;
+    const next = [...newOnes, ...prev].sort((a, b) => b.date.localeCompare(a.date));
+    // Update ref immediately — before setTransactions — so the next queued call
+    // reads the fully-merged list even if React hasn't re-rendered yet.
+    transactionsRef.current = next;
+    setTransactions(next);
+    saveTransactions(next);
     return added;
-  }, [merchantRules]);
+  }, []); // refs are stable — no deps needed
+
+  /** Enqueues a batch insert onto the serial import queue. Resolves with the exact
+   *  number of new (non-duplicate) transactions actually inserted. */
+  const addTransactionsAsync = useCallback((ts: Omit<Transaction, 'id'>[]): Promise<number> => {
+    let added = 0;
+    const task = importQueueRef.current.then(async () => {
+      added = addTransactionsCore(ts);
+    });
+    importQueueRef.current = task.then(() => {});
+    return task.then(() => added);
+  }, [addTransactionsCore]);
+
+  /** Public sync API — used for single manual adds from the UI.
+   *  Calls addTransactionsCore directly (no queue needed for single operations). */
+  const addTransactions = useCallback((ts: Omit<Transaction, 'id'>[]): number => {
+    return addTransactionsCore(ts);
+  }, [addTransactionsCore]);
 
   const setBudgetLimit = useCallback((category: CategoryId, limit: number) => {
     setStoredBudgets((prev) => {
@@ -507,6 +576,18 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     });
   }, []);
 
+  const refreshInsightProfile = useCallback(() => {
+    const budgetsForAnalysis: Budget[] = storedBudgets.map((b) => ({ ...b, spent: 0 }));
+    const analysis = analyzeSpending(transactions, budgetsForAnalysis);
+    if (analysis.totalExpenses < 10) return;
+    setInsightProfile((prev) => {
+      if (prev.lastProfileUpdate && prev.lastProfileUpdate >= analysis.analysisMonth) return prev;
+      const updated = updateProfileAfterMonth(prev, analysis);
+      saveInsightProfile(updated);
+      return updated;
+    });
+  }, [transactions, storedBudgets]);
+
   const enqueueImport = useCallback((
     files: { uri: string; name: string }[],
     parseFn: (uri: string, name: string) => Promise<ParseResult>,
@@ -549,9 +630,13 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
 
       parseFn(job.uri, job.fileName)
         .then(result => {
-          const added = addTransactions(result.transactions as Omit<Transaction, 'id'>[]);
+          const warning = result.truncationWarning?.message;
+          return addTransactionsAsync(result.transactions as Omit<Transaction, 'id'>[])
+            .then(added => ({ added, warning }));
+        })
+        .then(({ added, warning }) => {
           setImportJobs(prev => prev.map(j =>
-            j.id === job.id ? { ...j, status: 'done', addedCount: added } : j
+            j.id === job.id ? { ...j, status: 'done', addedCount: added, ...(warning ? { warning } : {}) } : j
           ));
         })
         .catch(err => {
@@ -561,7 +646,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
           ));
         });
     });
-  }, [importJobs, addTransactions]);
+  }, [importJobs, addTransactionsAsync]);
 
   // Fire notification when all jobs have settled
   useEffect(() => {
@@ -576,6 +661,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
 
   const resetAll = useCallback(async () => {
     await clearAllData();
+    transactionsRef.current = [];
     setTransactions([]);
     setStoredBudgets([]);
     setAssets([]);
@@ -623,6 +709,8 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
         refreshAssetPrices,
         answerQuestion,
         dismissQuestion,
+        refreshInsightProfile,
+        budgetReconciliation,
         resetAll,
         importJobs,
         enqueueImport,

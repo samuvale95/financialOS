@@ -9,6 +9,12 @@ export interface ParseResult {
   parsingSchema?: import('./bankSchemaStore').BankParsingSchema;
   /** Tier raggiunto dal smart parser — impostato da parseWithSmartParser. */
   _tier?: 'L1_cache' | 'L2_schema' | 'L3_full_ai';
+  /** Presente se il file è stato troncato prima dell'invio all'AI. */
+  truncationWarning?: {
+    totalLines: number;
+    includedLines: number;
+    message: string;
+  };
 }
 
 type BankType = 'isybank' | 'intesa' | 'unicredit' | 'revolut' | 'n26' | 'generic';

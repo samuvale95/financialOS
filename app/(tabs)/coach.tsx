@@ -13,6 +13,7 @@ import { analyzeSpending, getBudgetForecast, analyzeHistory } from '../../utils/
 import type { BudgetForecast, MonthlySnapshot } from '../../utils/spendingAnalyzer';
 import { generateCoachQuestions, generatePersistentInsights, generateTaxInsights } from '../../utils/coachEngine';
 import type { PersistentInsight } from '../../utils/coachEngine';
+import { detectAnomalies } from '../../utils/anomalyDetector';
 import type { CategoryAnalysis } from '../../utils/spendingAnalyzer';
 import type { CoachQuestion, CoachRecommendation } from '../../utils/coachEngine';
 import { useSettings } from '../../contexts/SettingsContext';
@@ -236,7 +237,19 @@ function HistoryChartsSection({ snapshots }: { snapshots: MonthlySnapshot[] }) {
 
 // ── Score ring ────────────────────────────────────────────────────────────────
 
-function ScoreRing({ score }: { score: number }) {
+function ScoreRing({ score }: { score: number | null }) {
+  if (score === null) {
+    return (
+      <View style={s.ringContainer}>
+        <View style={[s.ringOuter, { borderColor: Colors.border.default }]}>
+          <View style={[s.ringInner, { borderColor: Colors.border.default }]}>
+            <Text style={[s.ringScore, { color: Colors.text.muted, fontSize: 13 }]}>—</Text>
+          </View>
+        </View>
+        <Text style={[s.ringLabel, { color: Colors.text.muted }]}>Dati insufficienti</Text>
+      </View>
+    );
+  }
   const color =
     score >= 70 ? Colors.semantic.success :
     score >= 50 ? Colors.semantic.warning :
@@ -715,7 +728,21 @@ export default function CoachScreen() {
   );
 
   const budgetForecasts = useMemo(() => getBudgetForecast(budgets, transactions), [budgets, transactions]);
-  const persistentInsights = useMemo(() => generatePersistentInsights(analysis), [analysis]);
+
+  const currentMonthTx = useMemo(
+    () => transactions.filter((t) => t.date.startsWith(selectedMonth)),
+    [transactions, selectedMonth],
+  );
+
+  const anomalies = useMemo(
+    () => detectAnomalies(currentMonthTx, insightProfile, budgets),
+    [currentMonthTx, insightProfile, budgets],
+  );
+
+  const persistentInsights = useMemo(
+    () => generatePersistentInsights(analysis, insightProfile, anomalies),
+    [analysis, insightProfile, anomalies],
+  );
   const taxInsights = useMemo(
     () => generateTaxInsights(fiscalProfile, transactions),
     [fiscalProfile, transactions],
@@ -786,29 +813,32 @@ export default function CoachScreen() {
         <View style={s.scoreCard}>
           <ScoreRing score={analysis.score} />
           <View style={s.factorsWrap}>
-            {analysis.scoreFactors.map((f) => (
-              <View key={f.label} style={s.factorRow}>
-                <Ionicons
-                  name={f.icon as any}
-                  size={13}
-                  color={f.points < 0 ? Colors.semantic.danger : f.points > 0 ? Colors.semantic.success : Colors.text.muted}
-                />
-                <Text style={s.factorLabel}>{f.label}</Text>
-                <Text
-                  style={[
-                    s.factorPts,
-                    {
-                      color:
-                        f.points < 0 ? Colors.semantic.danger :
-                        f.points > 0 ? Colors.semantic.success :
-                        Colors.text.muted,
-                    },
-                  ]}
-                >
-                  {f.points > 0 ? '+' : ''}{f.points}
-                </Text>
-              </View>
-            ))}
+            {analysis.score === null ? (
+              <Text style={s.scoreInsufficient}>
+                Dati insufficienti per calcolare lo score
+              </Text>
+            ) : (
+              analysis.scoreFactors.map((f) => {
+                const ptColor =
+                  f.points < 0 ? Colors.semantic.danger :
+                  f.points > 0 ? Colors.semantic.success :
+                  Colors.text.muted;
+                return (
+                  <View key={f.label} style={s.factorRow}>
+                    <Ionicons name={f.icon as any} size={13} color={ptColor} />
+                    <View style={{ flex: 1 }}>
+                      <Text style={s.factorLabel}>{f.label}</Text>
+                      {f.description && (
+                        <Text style={s.factorDesc}>{f.description}</Text>
+                      )}
+                    </View>
+                    <Text style={[s.factorPts, { color: ptColor }]}>
+                      {f.points > 0 ? '+' : ''}{f.points}
+                    </Text>
+                  </View>
+                );
+              })
+            )}
           </View>
         </View>
 
@@ -1028,9 +1058,11 @@ const s = StyleSheet.create({
   ringMax: { fontSize: 11, fontWeight: '500', color: Colors.text.muted, marginBottom: 3 },
   ringLabel: { ...Typography.micro, fontWeight: '700' },
   factorsWrap: { flex: 1, gap: 10, paddingLeft: 8, borderLeftWidth: 1, borderLeftColor: Colors.border.default },
-  factorRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  factorLabel: { ...Typography.caption, color: Colors.text.secondary, flex: 1 },
+  factorRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 6 },
+  factorLabel: { ...Typography.caption, color: Colors.text.secondary },
+  factorDesc: { ...Typography.micro, color: Colors.text.muted, marginTop: 1 },
   factorPts: { ...Typography.caption, fontWeight: '700' },
+  scoreInsufficient: { ...Typography.caption, color: Colors.text.muted, fontStyle: 'italic' },
 
   // Section headers
   sectionHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 10 },

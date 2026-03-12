@@ -46,6 +46,9 @@ export default function ImportaScreen() {
     transactions,
     goals,
     addGoal,
+    merchantRules,
+    brandRules,
+    registerMerchantRule,
   } = useData();
 
   const [phase, setPhase] = useState<ImportPhase>('idle');
@@ -139,6 +142,13 @@ export default function ImportaScreen() {
             fullAIParser: baseParser,
             onSchemaLearned: (bankName) =>
               console.log('[Import] nuovo schema salvato per:', bankName),
+            existingMerchantRules: merchantRules,
+            existingBrandRules: brandRules,
+            onRulesLearned: (mappings) => {
+              const count = Object.keys(mappings).length;
+              console.log(`[Import] ${count} nuove regole merchant apprese dall'AI`);
+              Object.entries(mappings).forEach(([key, cat]) => registerMerchantRule(key, cat));
+            },
           });
           // For smart: collect for cache-save prompt only if L3 and auto-cache is off
           if (result._tier === 'L3_full_ai' && !useCache) {
@@ -262,7 +272,15 @@ export default function ImportaScreen() {
                 {job.status === 'pending' && (
                   <Ionicons name="ellipse-outline" size={16} color={Colors.text.muted} />
                 )}
-                <Text style={styles.jobName} numberOfLines={1}>{job.fileName}</Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.jobName} numberOfLines={1}>{job.fileName}</Text>
+                  {job.warning && (
+                    <View style={styles.jobWarningRow}>
+                      <Ionicons name="warning" size={11} color={Colors.semantic.warning} />
+                      <Text style={styles.jobWarningText}>{job.warning}</Text>
+                    </View>
+                  )}
+                </View>
                 {job.addedCount !== undefined && (
                   <Text style={styles.jobCount}>{job.addedCount} tx</Text>
                 )}
@@ -756,6 +774,17 @@ const styles = StyleSheet.create({
   jobCount: {
     ...Typography.micro,
     color: Colors.text.muted,
+  },
+  jobWarningRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: 2,
+  },
+  jobWarningText: {
+    ...Typography.micro,
+    color: Colors.semantic.warning,
+    flex: 1,
   },
   // Queue
   queueCard: {

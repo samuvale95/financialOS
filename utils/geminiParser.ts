@@ -280,9 +280,18 @@ export async function parseWithGemini(
     });
   }
 
+  let truncationWarning: ParseResult['truncationWarning'];
   if (fileContent.length > CSV_MAX_CHARS) {
+    const totalLines = fileContent.split('\n').length;
+    const truncated = fileContent.slice(0, CSV_MAX_CHARS);
+    const includedLines = truncated.split('\n').length;
+    truncationWarning = {
+      totalLines,
+      includedLines,
+      message: `File troppo grande: importate ${includedLines} di ${totalLines} righe`,
+    };
     console.warn(`[Gemini] testo troncato da ${fileContent.length} a ${CSV_MAX_CHARS} caratteri`);
-    fileContent = fileContent.slice(0, CSV_MAX_CHARS);
+    fileContent = truncated;
   }
 
   console.log(`[Gemini] ${fileType} | ${fileContent.length} chars | modello: gemini-2.5-flash-lite`);
@@ -295,5 +304,5 @@ export async function parseWithGemini(
   const result = parseGeminiJSON(rawText);
   appendChunkLog(0, 1, fileContent, rawText, result.transactions.length);
   console.log('[Gemini] prime 3 transazioni:', JSON.stringify(result.transactions.slice(0, 3), null, 2));
-  return result;
+  return { ...result, truncationWarning };
 }

@@ -11,6 +11,7 @@ import { getSchema, saveSchema } from './bankSchemaStore';
 import { parseWithSchema } from './schemaBasedParser';
 import { enrichCategories } from './merchantCategorizerAI';
 import type { ParseResult } from './parsers';
+import type { CategoryId } from '../constants/categories';
 
 interface SmartParseOptions {
   /** Se true: controlla cache per nome file prima di tutto */
@@ -19,6 +20,12 @@ interface SmartParseOptions {
   fullAIParser: (uri: string, name: string) => Promise<ParseResult>;
   /** Callback chiamata ogni volta che viene salvato uno schema nuovo */
   onSchemaLearned?: (bankName: string) => void;
+  /** Regole merchant già note — usate per pre-filtrare il payload AI */
+  existingMerchantRules?: Record<string, CategoryId>;
+  /** Regole brand già note — usate per pre-filtrare il payload AI */
+  existingBrandRules?: Record<string, CategoryId>;
+  /** Callback con le nuove regole apprese dall'AI (non-'other') */
+  onRulesLearned?: (mappings: Record<string, CategoryId>) => void;
 }
 
 export async function parseWithSmartParser(
@@ -50,8 +57,12 @@ export async function parseWithSmartParser(
         console.log(`[SmartParser] L2 schema locale: "${bankName}" (${schema.fileType})`);
         try {
           let result = await parseWithSchema(uri, schema);
-          // Arricchisci solo i merchant sconosciuti
-          result = await enrichCategories(result);
+          // Arricchisci solo i merchant sconosciuti, pre-filtrando le regole già note
+          const enriched = await enrichCategories(result, opts.existingMerchantRules, opts.existingBrandRules);
+          result = enriched.result;
+          if (Object.keys(enriched.newMappings).length > 0) {
+            opts.onRulesLearned?.(enriched.newMappings);
+          }
           result = { ...result, _tier: 'L2_schema' as const };
           if (opts.useCache) await setCachedResult(fileName, result);
           return result;

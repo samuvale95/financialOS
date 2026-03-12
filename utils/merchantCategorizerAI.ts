@@ -5,6 +5,7 @@
  */
 import type { CategoryId } from '../constants/categories';
 import type { ParseResult } from './parsers';
+import { getMerchantKey, extractBrand } from './categorizer';
 
 const GEMINI_ENDPOINT =
   'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:streamGenerateContent';
@@ -88,34 +89,67 @@ function safeParseCategories(raw: string): Record<string, CategoryId> {
   }
 }
 
+export interface EnrichResult {
+  result: ParseResult;
+  /** Mappings learned from AI that were not already in existing rules. key = merchantKey, value = category. */
+  newMappings: Record<string, CategoryId>;
+}
+
 /**
  * Arricchisce con AI le transazioni che il categorizer locale ha marcato come 'other'.
  * Invia solo le descrizioni uniche non riconosciute → payload minimo.
+ * Pre-filtra i merchant già coperti da existingMerchantRules / existingBrandRules.
+ * Restituisce anche newMappings con le regole appena apprese (non-'other').
  */
 export async function enrichCategories(
   result: ParseResult,
-): Promise<ParseResult> {
+  existingMerchantRules: Record<string, CategoryId> = {},
+  existingBrandRules: Record<string, CategoryId> = {},
+): Promise<EnrichResult> {
+  // Build set of already-covered merchant keys / brand strings so we skip them
+  const coveredKeys = new Set<string>(Object.keys(existingMerchantRules));
+  const coveredBrands = new Set<string>(Object.keys(existingBrandRules));
+
   const unknownDescs = [
     ...new Set(
       result.transactions
-        .filter(t => t.category === 'other')
+        .filter(t => {
+          if (t.category !== 'other') return false;
+          const key = getMerchantKey({ merchant: (t as any).merchant, description: t.description });
+          if (coveredKeys.has(key)) return false;
+          const brand = extractBrand({ merchant: (t as any).merchant, description: t.description });
+          if (brand.length >= 4 && coveredBrands.has(brand)) return false;
+          return true;
+        })
         .map(t => t.description),
     ),
   ];
 
   if (unknownDescs.length === 0) {
-    console.log('[CatAI] tutte le categorie già riconosciute localmente, nessuna chiamata AI');
-    return result;
+    console.log('[CatAI] tutte le categorie già riconosciute (locale + regole esistenti), nessuna chiamata AI');
+    return { result, newMappings: {} };
   }
 
   console.log(`[CatAI] ${unknownDescs.length} merchant sconosciuti → AI`);
-  console.log('[CatAI] payload:', JSON.stringify(unknownDescs));
 
   const mapping = GEMINI_API_KEY ? await callGemini(unknownDescs) : {};
 
   console.log('[CatAI] mapping ricevuto:', JSON.stringify(mapping));
 
-  if (Object.keys(mapping).length === 0) return result;
+  if (Object.keys(mapping).length === 0) return { result, newMappings: {} };
+
+  // Build newMappings: only non-'other' values, keyed by merchantKey of the first matching tx
+  const newMappings: Record<string, CategoryId> = {};
+  for (const [desc, cat] of Object.entries(mapping)) {
+    if (cat === 'other') continue;
+    // Find a transaction with this description to derive the merchantKey
+    const tx = result.transactions.find(t => t.description === desc);
+    if (!tx) continue;
+    const key = getMerchantKey({ merchant: (tx as any).merchant, description: tx.description });
+    if (!coveredKeys.has(key)) {
+      newMappings[key] = cat;
+    }
+  }
 
   const enriched = result.transactions.map(t => {
     if (t.category !== 'other') return t;
@@ -125,7 +159,7 @@ export async function enrichCategories(
 
   const improved = enriched.filter(t => t.category !== 'other').length
     - result.transactions.filter(t => t.category !== 'other').length;
-  console.log(`[CatAI] ${improved} transazioni riclassificate`);
+  console.log(`[CatAI] ${improved} transazioni riclassificate, ${Object.keys(newMappings).length} nuove regole apprese`);
 
-  return { ...result, transactions: enriched };
+  return { result: { ...result, transactions: enriched }, newMappings };
 }

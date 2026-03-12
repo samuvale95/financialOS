@@ -22,8 +22,7 @@ import SavingsRateWidget from '../../components/dashboard/SavingsRateWidget';
 import HouseGoalWidget from '../../components/dashboard/HouseGoalWidget';
 import RetirementWidget from '../../components/dashboard/RetirementWidget';
 import MonthProjectionCard from '../../components/dashboard/MonthProjectionCard';
-import ReconciliationBanner from '../../components/settings/ReconciliationBanner';
-import { reconcileProfile } from '../../utils/profileReconciler';
+import BudgetReconciliationBanner from '../../components/BudgetReconciliationBanner';
 import { useData } from '../../contexts/DataContext';
 import { useSettings } from '../../contexts/SettingsContext';
 import { loadOnboardingData } from '../../utils/storage';
@@ -201,10 +200,9 @@ function renderGoalWidget({ mainGoal, goals, accounts, monthSummary }: GoalWidge
 }
 
 export default function DashboardScreen() {
-  const { transactions, budgets, goals, accounts, subscriptions, monthSummary, isLoading, setBudgetLimit } = useData();
+  const { transactions, budgets, goals, accounts, subscriptions, monthSummary, isLoading } = useData();
   const { settings } = useSettings();
   const [mainGoal, setMainGoal] = useState<OnboardingGoalId | null>(null);
-  const [reconciliationDismissed, setReconciliationDismissed] = useState(false);
   const [historicalBannerDismissed, setHistoricalBannerDismissed] = useState(false);
 
   useEffect(() => {
@@ -224,18 +222,6 @@ export default function DashboardScreen() {
     )].sort().at(-1) ?? nowMonth;
     return lastMonth;
   }, [transactions]);
-
-  // Stored budgets come from `budgets` (Budget[] has limit + spent); pass as StoredBudget shape
-  const reconciliationResults = useMemo(() => {
-    if (reconciliationDismissed || transactions.length < 30) return [];
-    const storedShape = budgets.map((b) => ({ id: b.id, category: b.category, limit: b.limit, period: b.period }));
-    return reconcileProfile(transactions, storedShape, 2);
-  }, [transactions, budgets, reconciliationDismissed]);
-
-  const handleAdjustBudget = (category: string, newLimit: number) => {
-    setBudgetLimit(category as import('../../constants/categories').CategoryId, newLimit);
-    setReconciliationDismissed(true);
-  };
 
   const today = new Date().toLocaleDateString('it-IT', {
     weekday: 'long',
@@ -301,11 +287,7 @@ export default function DashboardScreen() {
                 onDismiss={() => setHistoricalBannerDismissed(true)}
               />
             )}
-            <ReconciliationBanner
-              results={reconciliationResults}
-              onAdjustBudget={handleAdjustBudget}
-              onDismiss={() => setReconciliationDismissed(true)}
-            />
+            <BudgetReconciliationBanner />
             {renderGoalWidget({
               mainGoal,
               goals,
