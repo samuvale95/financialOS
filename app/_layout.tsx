@@ -8,6 +8,7 @@ import { SettingsProvider } from '../contexts/SettingsContext';
 import { DataProvider } from '../contexts/DataContext';
 import { loadOnboardingData } from '../utils/storage';
 import { requestNotificationPermission } from '../utils/notifications';
+import { ErrorBoundary } from '../components/ErrorBoundary';
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
@@ -33,6 +34,7 @@ export default function RootLayout() {
   }, [navState?.key, onboardingChecked, needsOnboarding]);
 
   return (
+    <ErrorBoundary>
     <GestureHandlerRootView style={styles.root}>
       <SettingsProvider>
         <DataProvider>
@@ -71,6 +73,7 @@ export default function RootLayout() {
         </DataProvider>
       </SettingsProvider>
     </GestureHandlerRootView>
+    </ErrorBoundary>
   );
 }
 

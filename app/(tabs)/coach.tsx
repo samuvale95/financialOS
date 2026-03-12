@@ -16,6 +16,7 @@ import type { PersistentInsight } from '../../utils/coachEngine';
 import type { CategoryAnalysis } from '../../utils/spendingAnalyzer';
 import type { CoachQuestion, CoachRecommendation } from '../../utils/coachEngine';
 import { useSettings } from '../../contexts/SettingsContext';
+import { SectionErrorBoundary } from '../../components/SectionErrorBoundary';
 
 // ── History Charts ────────────────────────────────────────────────────────────
 
@@ -830,6 +831,7 @@ export default function CoachScreen() {
         )}
 
         {hasData && (
+          <SectionErrorBoundary label="Analisi Coach non disponibile">
           <>
             {/* Month selector */}
             {availableMonths.length > 1 && (
@@ -978,6 +980,7 @@ export default function CoachScreen() {
               </View>
             )}
           </>
+          </SectionErrorBoundary>
         )}
 
         <View style={{ height: 20 }} />

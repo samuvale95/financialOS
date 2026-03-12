@@ -29,6 +29,7 @@ import { useSettings } from '../../contexts/SettingsContext';
 import { loadOnboardingData } from '../../utils/storage';
 import { calculateEstimated730Refund, calculateForfettarioNetto } from '../../utils/taxCalculator';
 import type { Transaction, Goal, OnboardingGoalId } from '../../types';
+import { SectionErrorBoundary } from '../../components/SectionErrorBoundary';
 
 function EmergencyFundCard({ goals, monthlyExpenses }: { goals: Goal[]; monthlyExpenses: number }) {
   const goal = goals.find((g) => g.title === 'Fondo di Emergenza');
@@ -256,6 +257,7 @@ export default function DashboardScreen() {
             </View>
           </>
         ) : (
+          <SectionErrorBoundary label="Dashboard non disponibile">
           <>
             <NetWorthCard summary={monthSummary} />
             <ReconciliationBanner
@@ -292,6 +294,7 @@ export default function DashboardScreen() {
               onSeeAll={() => router.push('/(tabs)/spese')}
             />
           </>
+          </SectionErrorBoundary>
         )}
 
         <View style={styles.bottomPad} />

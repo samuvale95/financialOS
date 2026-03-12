@@ -1,4 +1,5 @@
 import React, { useMemo } from 'react';
+import { SectionErrorBoundary } from '../../components/SectionErrorBoundary';
 import { ScrollView, View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
@@ -42,6 +43,7 @@ export default function PortfolioScreen() {
             </Text>
           </View>
         ) : (
+          <SectionErrorBoundary label="Portfolio non disponibile">
           <>
             <PortfolioHero summary={summary} />
             <AllocationDonut assets={assets} />
@@ -63,6 +65,7 @@ export default function PortfolioScreen() {
               ))}
             </Card>
           </>
+          </SectionErrorBoundary>
         )}
 
         <View style={{ height: 16 }} />
