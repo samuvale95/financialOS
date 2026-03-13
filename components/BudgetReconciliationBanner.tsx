@@ -6,9 +6,8 @@ import {
   TouchableOpacity,
   Modal,
   ScrollView,
-  Platform,
 } from 'react-native';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as FileSystem from 'expo-file-system/legacy';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Colors, Typography, Radius } from '../constants/theme';
@@ -16,7 +15,7 @@ import { useData } from '../contexts/DataContext';
 import type { CategoryId } from '../constants/categories';
 import type { ReconciliationResult } from '../utils/profileReconciler';
 
-const DISMISS_KEY = 'financialOS_reconciliation_dismissed_until';
+const DISMISS_FILE = FileSystem.documentDirectory + 'reconciliation_dismissed.json';
 const DISMISS_DURATION_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 
 // ── Row inside the bottom sheet ───────────────────────────────────────────────
@@ -78,20 +77,16 @@ export default function BudgetReconciliationBanner() {
 
   // Check stored dismiss timestamp on mount
   useEffect(() => {
-    AsyncStorage.getItem(DISMISS_KEY).then((val) => {
-      if (val && new Date(val) > new Date()) {
-        setDismissed(true);
-      } else {
-        setDismissed(false);
-      }
-    });
+    FileSystem.readAsStringAsync(DISMISS_FILE).then((val) => {
+      setDismissed(val ? new Date(val) > new Date() : false);
+    }).catch(() => setDismissed(false));
   }, []);
 
   const highResults = budgetReconciliation.filter((r) => r.confidence === 'high');
 
   const handleDismiss = useCallback(() => {
     const until = new Date(Date.now() + DISMISS_DURATION_MS).toISOString();
-    AsyncStorage.setItem(DISMISS_KEY, until);
+    FileSystem.writeAsStringAsync(DISMISS_FILE, until).catch(() => {});
     setDismissed(true);
     setSheetOpen(false);
   }, []);

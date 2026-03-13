@@ -6,6 +6,7 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { StyleSheet } from 'react-native';
 import { SettingsProvider } from '../contexts/SettingsContext';
 import { DataProvider } from '../contexts/DataContext';
+import { AnalysisProvider } from '../contexts/AnalysisContext';
 import { loadOnboardingData } from '../utils/storage';
 import { requestNotificationPermission } from '../utils/notifications';
 import { ErrorBoundary } from '../components/ErrorBoundary';
@@ -38,6 +39,7 @@ export default function RootLayout() {
     <GestureHandlerRootView style={styles.root}>
       <SettingsProvider>
         <DataProvider>
+          <AnalysisProvider>
           <StatusBar style="light" backgroundColor="#0A0B0F" />
           <Stack screenOptions={{ headerShown: false }}>
             <Stack.Screen name="(tabs)" />
@@ -70,6 +72,7 @@ export default function RootLayout() {
               options={{ presentation: 'modal', animation: 'slide_from_bottom' }}
             />
           </Stack>
+          </AnalysisProvider>
         </DataProvider>
       </SettingsProvider>
     </GestureHandlerRootView>

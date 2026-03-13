@@ -18,7 +18,6 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import { Colors, Typography, Radius, Spacing } from '../constants/theme';
@@ -870,7 +869,7 @@ function IncomeForm({ onAdd }: { onAdd: (s: IncomeSource) => void }) {
 
 // ── Draft persistence ─────────────────────────────────────────────────────────
 
-const DRAFT_KEY = 'onboarding_draft_v1';
+const DRAFT_FILE = FileSystem.documentDirectory + 'onboarding_draft_v1.json';
 
 const STEP_NAMES: Record<number, string> = {
   0:  'Benvenuto',
@@ -916,8 +915,7 @@ export default function OnboardingScreen() {
 
   // ── Draft: load on mount ──────────────────────────────────────────────────
   useEffect(() => {
-    AsyncStorage.getItem(DRAFT_KEY).then((raw) => {
-      if (!raw) return;
+    FileSystem.readAsStringAsync(DRAFT_FILE).then((raw) => {
       try {
         const parsed: WizardState = JSON.parse(raw);
         if (parsed.step > 0 && parsed.step < 13) {
@@ -925,9 +923,9 @@ export default function OnboardingScreen() {
           setShowResumeDialog(true);
         }
       } catch {
-        AsyncStorage.removeItem(DRAFT_KEY);
+        FileSystem.deleteAsync(DRAFT_FILE, { idempotent: true }).catch(() => {});
       }
-    });
+    }).catch(() => {/* no draft file — fine */});
   }, []);
 
   // ── Draft: save on every step change ─────────────────────────────────────
@@ -936,7 +934,7 @@ export default function OnboardingScreen() {
     // Exclude large imported transaction data from the draft to keep storage small.
     // The user will re-import files from step 11.
     const draft = { ...state, importedFiles: [] };
-    AsyncStorage.setItem(DRAFT_KEY, JSON.stringify(draft)).catch(() => {});
+    FileSystem.writeAsStringAsync(DRAFT_FILE, JSON.stringify(draft)).catch(() => {});
   }, [state.step]);
 
   const nextStep = useCallback(() => {
@@ -1137,7 +1135,7 @@ export default function OnboardingScreen() {
       const mergedForSave = mergeImportedFiles(state.importedFiles, accountIds);
       if (mergedForSave.length > 0) addTransactions(mergedForSave);
 
-      await AsyncStorage.removeItem(DRAFT_KEY);
+      await FileSystem.deleteAsync(DRAFT_FILE, { idempotent: true }).catch(() => {});
       await saveOnboardingData({
         completed: true,
         completedAt: new Date().toISOString(),
@@ -2064,7 +2062,7 @@ export default function OnboardingScreen() {
               style={s.resumeBtnSecondary}
               activeOpacity={0.7}
               onPress={() => {
-                AsyncStorage.removeItem(DRAFT_KEY);
+                FileSystem.deleteAsync(DRAFT_FILE, { idempotent: true }).catch(() => {});
                 setShowResumeDialog(false);
                 setDraftState(null);
               }}

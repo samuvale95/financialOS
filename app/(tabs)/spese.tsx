@@ -12,6 +12,8 @@ import { router } from 'expo-router';
 import { Colors, Typography, Radius } from '../../constants/theme';
 import { DayGroup } from '../../components/spese/DayGroup';
 import { useData } from '../../contexts/DataContext';
+import { useAnalysis } from '../../contexts/AnalysisContext';
+import MonthSelectorStrip from '../../components/MonthSelectorStrip';
 import { CATEGORIES } from '../../constants/categories';
 import type { Transaction } from '../../types';
 import type { CategoryId } from '../../constants/categories';
@@ -40,15 +42,6 @@ function buildCategoryTrend(
   return result;
 }
 
-function getAvailableMonths(transactions: Transaction[]): string[] {
-  const months = new Set<string>();
-  for (const t of transactions) months.add(t.date.slice(0, 7));
-  return Array.from(months).sort();
-}
-
-function formatMonthLabel(ym: string): string {
-  return new Date(ym + '-15').toLocaleDateString('it-IT', { month: 'long', year: 'numeric' });
-}
 
 function groupByDate(transactions: Transaction[]): Record<string, Transaction[]> {
   return transactions.reduce<Record<string, Transaction[]>>((acc, t) => {
@@ -177,11 +170,7 @@ export default function SpeseScreen() {
   const [sortMode, setSortMode] = useState<SortMode>('date_desc');
   const [activeTab, setActiveTab] = useState<ActiveTab>('list');
   const [categoryFilter, setCategoryFilter] = useState<CategoryId | null>(null);
-  const [selectedMonth, setSelectedMonth] = useState<string>(
-    () => new Date().toISOString().slice(0, 7)
-  );
-
-  const availableMonths = useMemo(() => getAvailableMonths(transactions), [transactions]);
+  const { selectedMonth } = useAnalysis();
 
   const monthTransactions = useMemo(
     () => transactions.filter((t) => t.date.startsWith(selectedMonth)),
@@ -192,18 +181,6 @@ export default function SpeseScreen() {
     () => monthTransactions.filter((t) => t.category === 'other' && t.amount < 0).length,
     [monthTransactions]
   );
-
-  const goToPrevMonth = () => {
-    const idx = availableMonths.indexOf(selectedMonth);
-    if (idx > 0) setSelectedMonth(availableMonths[idx - 1]);
-  };
-  const goToNextMonth = () => {
-    const idx = availableMonths.indexOf(selectedMonth);
-    if (idx < availableMonths.length - 1) setSelectedMonth(availableMonths[idx + 1]);
-  };
-
-  const prevMonthDisabled = availableMonths.indexOf(selectedMonth) <= 0;
-  const nextMonthDisabled = availableMonths.indexOf(selectedMonth) >= availableMonths.length - 1;
 
   // Expense categories that appear in month transactions
   const expenseCategories = useMemo(() => {
@@ -267,28 +244,8 @@ export default function SpeseScreen() {
         </TouchableOpacity>
       </View>
 
-      {/* Month Navigator */}
-      {availableMonths.length > 0 && (
-        <View style={styles.monthNav}>
-          <TouchableOpacity
-            style={[styles.monthArrow, prevMonthDisabled && { opacity: 0.3 }]}
-            onPress={goToPrevMonth}
-            disabled={prevMonthDisabled}
-            activeOpacity={0.7}
-          >
-            <Ionicons name="chevron-back" size={18} color={Colors.text.secondary} />
-          </TouchableOpacity>
-          <Text style={styles.monthLabel}>{formatMonthLabel(selectedMonth)}</Text>
-          <TouchableOpacity
-            style={[styles.monthArrow, nextMonthDisabled && { opacity: 0.3 }]}
-            onPress={goToNextMonth}
-            disabled={nextMonthDisabled}
-            activeOpacity={0.7}
-          >
-            <Ionicons name="chevron-forward" size={18} color={Colors.text.secondary} />
-          </TouchableOpacity>
-        </View>
-      )}
+      {/* Month selector strip */}
+      <MonthSelectorStrip />
 
       {/* Unclassified banner */}
       {unclassifiedCount > 0 && (
@@ -640,32 +597,6 @@ const styles = StyleSheet.create({
   sortBtnActive: {
     borderColor: Colors.accent.primary,
     backgroundColor: Colors.accent.glow,
-  },
-  monthNav: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 16,
-    marginBottom: 10,
-    gap: 12,
-  },
-  monthArrow: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: Colors.bg.card,
-    borderWidth: 1,
-    borderColor: Colors.border.default,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  monthLabel: {
-    ...Typography.bodyMedium,
-    color: Colors.text.primary,
-    fontWeight: '700',
-    flex: 1,
-    textAlign: 'center',
-    textTransform: 'capitalize',
   },
   unclassifiedBanner: {
     flexDirection: 'row',

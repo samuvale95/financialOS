@@ -1,4 +1,4 @@
-import React, { useMemo, useState, useEffect } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   ScrollView, View, Text, StyleSheet,
   TouchableOpacity,
@@ -17,7 +17,9 @@ import { detectAnomalies } from '../../utils/anomalyDetector';
 import type { CategoryAnalysis } from '../../utils/spendingAnalyzer';
 import type { CoachQuestion, CoachRecommendation } from '../../utils/coachEngine';
 import { useSettings } from '../../contexts/SettingsContext';
+import { useAnalysis } from '../../contexts/AnalysisContext';
 import { SectionErrorBoundary } from '../../components/SectionErrorBoundary';
+import MonthSelectorStrip from '../../components/MonthSelectorStrip';
 
 // ── History Charts ────────────────────────────────────────────────────────────
 
@@ -646,76 +648,13 @@ function UnclassifiedCard({ count }: { count: number }) {
   );
 }
 
-// ── Month Selector ────────────────────────────────────────────────────────────
-
-function MonthSelector({
-  months,
-  selected,
-  onChange,
-}: {
-  months: string[];
-  selected: string;
-  onChange: (m: string) => void;
-}) {
-  const idx = months.indexOf(selected);
-  const label = new Date(selected + '-01').toLocaleDateString('it-IT', {
-    month: 'long', year: 'numeric',
-  });
-  const isNewest = idx === months.length - 1;
-  const isOldest = idx === 0;
-
-  return (
-    <View style={s.monthSelector}>
-      <TouchableOpacity
-        style={[s.monthArrow, isOldest && s.monthArrowDisabled]}
-        onPress={() => !isOldest && onChange(months[idx - 1])}
-        activeOpacity={0.7}
-      >
-        <Ionicons name="chevron-back" size={20} color={isOldest ? Colors.text.muted : Colors.text.primary} />
-      </TouchableOpacity>
-
-      <View style={s.monthLabelWrap}>
-        <Text style={s.monthSelectorLabel}>{label}</Text>
-        {isNewest && (
-          <View style={s.monthCurrentBadge}>
-            <Text style={s.monthCurrentText}>Più recente</Text>
-          </View>
-        )}
-      </View>
-
-      <TouchableOpacity
-        style={[s.monthArrow, isNewest && s.monthArrowDisabled]}
-        onPress={() => !isNewest && onChange(months[idx + 1])}
-        activeOpacity={0.7}
-      >
-        <Ionicons name="chevron-forward" size={20} color={isNewest ? Colors.text.muted : Colors.text.primary} />
-      </TouchableOpacity>
-    </View>
-  );
-}
-
 // ── Main screen ───────────────────────────────────────────────────────────────
 
 export default function CoachScreen() {
   const { transactions, budgets, insightProfile, answerQuestion, dismissQuestion } = useData();
   const { fiscalProfile } = useSettings();
 
-  const availableMonths = useMemo(() => {
-    return [...new Set(
-      transactions
-        .filter(t => t.category !== 'transfer')
-        .map(t => t.date.slice(0, 7))
-    )].sort();
-  }, [transactions]);
-
-  const latestMonth = availableMonths.at(-1) ?? new Date().toISOString().slice(0, 7);
-  const [selectedMonth, setSelectedMonth] = useState<string>(latestMonth);
-
-  useEffect(() => {
-    if (availableMonths.length > 0 && !availableMonths.includes(selectedMonth)) {
-      setSelectedMonth(availableMonths.at(-1)!);
-    }
-  }, [availableMonths]);
+  const { selectedMonth, availableMonths } = useAnalysis();
 
   const analysis = useMemo(
     () => analyzeSpending(transactions, budgets, selectedMonth),
@@ -809,6 +748,9 @@ export default function CoachScreen() {
           </View>
         </View>
 
+        {/* Month selector */}
+        <MonthSelectorStrip />
+
         {/* Score + factors */}
         <View style={s.scoreCard}>
           <ScoreRing score={analysis.score} />
@@ -863,15 +805,6 @@ export default function CoachScreen() {
         {hasData && (
           <SectionErrorBoundary label="Analisi Coach non disponibile">
           <>
-            {/* Month selector */}
-            {availableMonths.length > 1 && (
-              <MonthSelector
-                months={availableMonths}
-                selected={selectedMonth}
-                onChange={setSelectedMonth}
-              />
-            )}
-
             {/* Active question or recommendation */}
             {activeQuestion && !activeRec && (
               <View>
@@ -1381,25 +1314,4 @@ const s = StyleSheet.create({
   },
   unclassBtnText: { ...Typography.caption, color: '#000', fontWeight: '700' },
 
-  // Month Selector
-  monthSelector: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    backgroundColor: Colors.bg.card, borderRadius: Radius.lg,
-    borderWidth: 1, borderColor: Colors.border.default,
-    paddingVertical: 10, paddingHorizontal: 12,
-  },
-  monthArrow: {
-    width: 36, height: 36, borderRadius: 18,
-    alignItems: 'center', justifyContent: 'center',
-    backgroundColor: Colors.bg.elevated,
-  },
-  monthArrowDisabled: { opacity: 0.3 },
-  monthLabelWrap: { alignItems: 'center', gap: 4 },
-  monthSelectorLabel: { ...Typography.bodyMedium, color: Colors.text.primary, fontWeight: '700', textTransform: 'capitalize' },
-  monthCurrentBadge: {
-    backgroundColor: Colors.accent.glow, borderRadius: Radius.full,
-    paddingHorizontal: 8, paddingVertical: 2,
-    borderWidth: 1, borderColor: Colors.border.accent,
-  },
-  monthCurrentText: { ...Typography.micro, color: Colors.accent.primary, fontWeight: '600' },
 });
