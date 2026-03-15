@@ -61,6 +61,33 @@ function Section({ title, children }: SectionProps) {
   );
 }
 
+interface MacroSectionProps {
+  title: string;
+  subtitle: string;
+  experimental?: boolean;
+  children: React.ReactNode;
+}
+
+function MacroSection({ title, subtitle, experimental = false, children }: MacroSectionProps) {
+  return (
+    <View style={styles.macroSection}>
+      <View style={styles.macroHeader}>
+        <View style={styles.macroTitleRow}>
+          <Text style={styles.macroTitle}>{title}</Text>
+          {experimental && (
+            <View style={styles.expBadge}>
+              <Ionicons name="flask-outline" size={11} color={Colors.semantic.warning} />
+              <Text style={styles.expBadgeText}>Avanzato</Text>
+            </View>
+          )}
+        </View>
+        <Text style={styles.macroSubtitle}>{subtitle}</Text>
+      </View>
+      <View style={styles.macroContent}>{children}</View>
+    </View>
+  );
+}
+
 // ── BankPicker (inline) ─────────────────────────────────────────────────────
 
 interface BankPickerProps {
@@ -393,141 +420,187 @@ export default function SettingsScreen() {
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
       >
-        {/* Profilo fiscale */}
-        <FiscoProfileSection />
 
-        {/* Conti bancari */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>CONTI BANCARI</Text>
-          <View style={styles.card}>
-            {accounts.length === 0 && !showAddAccount && (
-              <View style={styles.emptyAccounts}>
-                <Text style={styles.rowDesc}>Nessun conto aggiunto</Text>
-              </View>
-            )}
-            {accounts.map((acc, i) => (
-              <View key={acc.id}>
-                <AccountRow
-                  account={acc}
-                  onUpdate={updateAccount}
-                  onDelete={deleteAccount}
+        {/* ── PREFERENZE ─────────────────────────────────────────────────────── */}
+        <MacroSection
+          title="Preferenze"
+          subtitle="Personalizza l'app in base al tuo profilo e alle tue abitudini"
+        >
+          {/* Profilo fiscale */}
+          <FiscoProfileSection />
+
+          {/* Conti bancari */}
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>CONTI BANCARI</Text>
+            <View style={styles.card}>
+              {accounts.length === 0 && !showAddAccount && (
+                <View style={styles.emptyAccounts}>
+                  <Text style={styles.rowDesc}>Nessun conto aggiunto</Text>
+                </View>
+              )}
+              {accounts.map((acc, i) => (
+                <View key={acc.id}>
+                  <AccountRow
+                    account={acc}
+                    onUpdate={updateAccount}
+                    onDelete={deleteAccount}
+                  />
+                  {i < accounts.length - 1 && <View style={styles.separator} />}
+                </View>
+              ))}
+              {accounts.length > 0 && !showAddAccount && <View style={styles.separator} />}
+              {showAddAccount ? (
+                <BankPickerForm
+                  onConfirm={(acc) => { addAccount(acc); setShowAddAccount(false); }}
+                  onCancel={() => setShowAddAccount(false)}
                 />
-                {i < accounts.length - 1 && <View style={styles.separator} />}
-              </View>
-            ))}
-            {accounts.length > 0 && !showAddAccount && (
-              <View style={styles.separator} />
-            )}
-            {showAddAccount ? (
-              <BankPickerForm
-                onConfirm={(acc) => {
-                  addAccount(acc);
-                  setShowAddAccount(false);
-                }}
-                onCancel={() => setShowAddAccount(false)}
-              />
-            ) : (
-              <TouchableOpacity
-                style={styles.addRow}
-                onPress={() => setShowAddAccount(true)}
-                activeOpacity={0.7}
-              >
-                <Ionicons name="add-circle" size={20} color={Colors.accent.primary} />
-                <Text style={styles.addRowText}>Aggiungi conto</Text>
-              </TouchableOpacity>
-            )}
+              ) : (
+                <TouchableOpacity
+                  style={styles.addRow}
+                  onPress={() => setShowAddAccount(true)}
+                  activeOpacity={0.7}
+                >
+                  <Ionicons name="add-circle" size={20} color={Colors.accent.primary} />
+                  <Text style={styles.addRowText}>Aggiungi conto</Text>
+                </TouchableOpacity>
+              )}
+            </View>
           </View>
-        </View>
 
-        {/* Funzionalità */}
-        <Section title="Funzionalità">
-          <SettingRow
-            label="Budget"
-            description="Traccia i limiti di spesa per categoria"
-            value={settings.features.budgets}
-            onToggle={(v) => updateSetting('features', 'budgets', v)}
-          />
-          <View style={styles.separator} />
-          <SettingRow
-            label="Obiettivi"
-            description="Monitora i tuoi obiettivi di risparmio"
-            value={settings.features.goals}
-            onToggle={(v) => updateSetting('features', 'goals', v)}
-          />
-          <View style={styles.separator} />
-          <SettingRow
-            label="Portfolio"
-            description="Gestisci i tuoi investimenti"
-            value={settings.features.portfolio}
-            onToggle={(v) => updateSetting('features', 'portfolio', v)}
-          />
-          <View style={styles.separator} />
-          <SettingRow
-            label="Coach AI"
-            description="Ricevi consigli finanziari personalizzati"
-            value={settings.features.coach}
-            onToggle={(v) => updateSetting('features', 'coach', v)}
-          />
-        </Section>
+          {/* Funzionalità */}
+          <Section title="FUNZIONALITÀ">
+            <SettingRow
+              label="Budget"
+              description="Traccia i limiti di spesa per categoria"
+              value={settings.features.budgets}
+              onToggle={(v) => updateSetting('features', 'budgets', v)}
+            />
+            <View style={styles.separator} />
+            <SettingRow
+              label="Obiettivi"
+              description="Monitora i tuoi obiettivi di risparmio"
+              value={settings.features.goals}
+              onToggle={(v) => updateSetting('features', 'goals', v)}
+            />
+            <View style={styles.separator} />
+            <SettingRow
+              label="Portfolio"
+              description="Gestisci i tuoi investimenti"
+              value={settings.features.portfolio}
+              onToggle={(v) => updateSetting('features', 'portfolio', v)}
+            />
+            <View style={styles.separator} />
+            <SettingRow
+              label="Coach AI"
+              description="Ricevi consigli finanziari personalizzati"
+              value={settings.features.coach}
+              onToggle={(v) => updateSetting('features', 'coach', v)}
+            />
+          </Section>
 
-        {/* Importazione */}
-        <Section title="Importazione">
-          <SettingRow
-            label="PDF"
-            description="Importa estratti conto in PDF"
-            value={settings.import.pdf}
-            onToggle={(v) => updateSetting('import', 'pdf', v)}
-          />
-          <View style={styles.separator} />
-          <SettingRow
-            label="Excel"
-            description="Importa file Excel (.xlsx)"
-            value={settings.import.excel}
-            onToggle={(v) => updateSetting('import', 'excel', v)}
-          />
-          <View style={styles.separator} />
-          <SettingRow
-            label="CSV"
-            description="Importa file CSV"
-            value={settings.import.csv}
-            onToggle={(v) => updateSetting('import', 'csv', v)}
-          />
-          <View style={styles.separator} />
-          <SettingRow
-            label="Inserimento Manuale"
-            description="Aggiungi transazioni a mano"
-            value={settings.import.manual}
-            onToggle={(v) => updateSetting('import', 'manual', v)}
-          />
-          {hasGemini && (
-            <>
-              <View style={styles.separator} />
-              <SettingRow
-                label="AI Parsing"
-                description="Usa Gemini AI per leggere e classificare i file importati"
-                value={settings.import.geminiParsing}
-                onToggle={(v) => updateSetting('import', 'geminiParsing', v)}
-              />
-            </>
-          )}
-        </Section>
+          {/* Formati di importazione */}
+          <Section title="IMPORTAZIONE">
+            <SettingRow
+              label="PDF"
+              description="Importa estratti conto in PDF"
+              value={settings.import.pdf}
+              onToggle={(v) => updateSetting('import', 'pdf', v)}
+            />
+            <View style={styles.separator} />
+            <SettingRow
+              label="Excel"
+              description="Importa file Excel (.xlsx)"
+              value={settings.import.excel}
+              onToggle={(v) => updateSetting('import', 'excel', v)}
+            />
+            <View style={styles.separator} />
+            <SettingRow
+              label="CSV"
+              description="Importa file CSV"
+              value={settings.import.csv}
+              onToggle={(v) => updateSetting('import', 'csv', v)}
+            />
+            <View style={styles.separator} />
+            <SettingRow
+              label="Inserimento Manuale"
+              description="Aggiungi transazioni a mano"
+              value={settings.import.manual}
+              onToggle={(v) => updateSetting('import', 'manual', v)}
+            />
+          </Section>
 
-        {/* Preferenze */}
-        <Section title="Preferenze">
-          <SettingRow
-            label="Feedback Aptico"
-            description="Vibrazione al tocco"
-            value={settings.preferences.haptics}
-            onToggle={(v) => updateSetting('preferences', 'haptics', v)}
-          />
-        </Section>
+          {/* Generali */}
+          <Section title="GENERALI">
+            <SettingRow
+              label="Feedback Aptico"
+              description="Vibrazione al tocco"
+              value={settings.preferences.haptics}
+              onToggle={(v) => updateSetting('preferences', 'haptics', v)}
+            />
+          </Section>
+        </MacroSection>
 
-        {/* Developer */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>DEVELOPER</Text>
-          <View style={styles.card}>
+        {/* ── DATI & SICUREZZA ────────────────────────────────────────────────── */}
+        <MacroSection
+          title="Dati & sicurezza"
+          subtitle="Cronologia delle importazioni e informazioni sull'app"
+        >
+          <Section title="REGISTRO">
+            <TouchableOpacity
+              style={styles.resetRow}
+              onPress={() => router.push('/import-analytics')}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="bar-chart-outline" size={20} color={Colors.accent.primary} />
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.resetLabel, { color: Colors.text.primary }]}>Analytics importazione</Text>
+                <Text style={styles.resetDesc}>Cronologia, tempi, modelli e risparmio stimato</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={16} color={Colors.text.muted} />
+            </TouchableOpacity>
+            <View style={styles.separator} />
+            <TouchableOpacity
+              style={styles.resetRow}
+              onPress={() => router.push('/import-logs')}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="receipt-outline" size={20} color={Colors.text.secondary} />
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.resetLabel, { color: Colors.text.primary }]}>Log importazione</Text>
+                <Text style={styles.resetDesc}>Testo inviato al modello e risposta raw</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={16} color={Colors.text.muted} />
+            </TouchableOpacity>
+          </Section>
 
-            {/* Strategia di importazione */}
+          <View style={styles.infoCard}>
+            <Ionicons name="information-circle-outline" size={20} color={Colors.text.muted} />
+            <View style={styles.infoText}>
+              <Text style={styles.infoApp}>FinancialOS</Text>
+              <Text style={styles.infoVersion}>Versione 1.0.0</Text>
+            </View>
+          </View>
+        </MacroSection>
+
+        {/* ── FUNZIONI SPERIMENTALI ───────────────────────────────────────────── */}
+        <MacroSection
+          title="Funzioni sperimentali"
+          subtitle="Opzioni avanzate che possono modificare il comportamento dell'app. Usa con cautela."
+          experimental
+        >
+          {/* AI Parsing + strategia */}
+          <Section title="IMPORTAZIONE AI">
+            {hasGemini && (
+              <>
+                <SettingRow
+                  label="AI Parsing"
+                  description="Usa Gemini AI per leggere e classificare i file importati"
+                  value={settings.import.geminiParsing}
+                  onToggle={(v) => updateSetting('import', 'geminiParsing', v)}
+                />
+                <View style={styles.separator} />
+              </>
+            )}
             <View style={styles.strategyRow}>
               <View style={styles.rowInfo}>
                 <Text style={styles.rowLabel}>Strategia importazione</Text>
@@ -561,12 +634,10 @@ export default function SettingsScreen() {
                 );
               })}
             </View>
-
             <View style={styles.separator} />
-
             <SettingRow
               label="Usa cache AI"
-              description="Riusa risultati salvati invece di chiamare l'AI (solo per test)"
+              description="Riusa risultati salvati invece di chiamare l'AI — solo per test"
               value={settings.developer.useAiCache}
               onToggle={(v) => updateSetting('developer', 'useAiCache', v)}
             />
@@ -604,46 +675,16 @@ export default function SettingsScreen() {
               </View>
               <Ionicons name="chevron-forward" size={16} color={Colors.text.muted} />
             </TouchableOpacity>
+          </Section>
 
-            <View style={styles.separator} />
-
-            {/* Analytics link */}
-            <TouchableOpacity
-              style={styles.resetRow}
-              onPress={() => router.push('/import-analytics')}
-              activeOpacity={0.7}
-            >
-              <Ionicons name="bar-chart-outline" size={20} color={Colors.accent.primary} />
-              <View style={{ flex: 1 }}>
-                <Text style={[styles.resetLabel, { color: Colors.text.primary }]}>Analytics importazione</Text>
-                <Text style={styles.resetDesc}>Cronologia, tempi, modelli e risparmio stimato</Text>
-              </View>
-              <Ionicons name="chevron-forward" size={16} color={Colors.text.muted} />
-            </TouchableOpacity>
-
-            <View style={styles.separator} />
-
-            {/* Logs link */}
-            <TouchableOpacity
-              style={styles.resetRow}
-              onPress={() => router.push('/import-logs')}
-              activeOpacity={0.7}
-            >
-              <Ionicons name="receipt-outline" size={20} color={Colors.semantic.warning} />
-              <View style={{ flex: 1 }}>
-                <Text style={[styles.resetLabel, { color: Colors.text.primary }]}>Log importazione</Text>
-                <Text style={styles.resetDesc}>Testo inviato al modello e risposta raw — debug entrate/uscite</Text>
-              </View>
-              <Ionicons name="chevron-forward" size={16} color={Colors.text.muted} />
-            </TouchableOpacity>
-
-            <View style={styles.separator} />
+          {/* Reset — zona pericolo */}
+          <Section title="ZONA PERICOLO">
             <TouchableOpacity
               style={styles.resetRow}
               onPress={() =>
                 Alert.alert(
                   'Reset completo',
-                  'Verranno cancellati tutti i dati: transazioni, budget, investimenti, conti e configurazione onboarding. L\'app ripartirà dal primo accesso.',
+                  "Verranno cancellati tutti i dati: transazioni, budget, investimenti, conti e configurazione onboarding. L'app ripartirà dal primo accesso.",
                   [
                     { text: 'Annulla', style: 'cancel' },
                     {
@@ -666,19 +707,13 @@ export default function SettingsScreen() {
               </View>
               <Ionicons name="chevron-forward" size={16} color={Colors.text.muted} />
             </TouchableOpacity>
-          </View>
-        </View>
+            <Text style={styles.dangerWarning}>
+              Azione irreversibile — transazioni, budget, investimenti e tutta la configurazione verranno eliminati definitivamente dal dispositivo.
+            </Text>
+          </Section>
+        </MacroSection>
 
-        {/* Info */}
-        <View style={styles.infoCard}>
-          <Ionicons name="information-circle-outline" size={20} color={Colors.text.muted} />
-          <View style={styles.infoText}>
-            <Text style={styles.infoApp}>FinancialOS</Text>
-            <Text style={styles.infoVersion}>Versione 1.0.0</Text>
-          </View>
-        </View>
-
-        <View style={{ height: 32 }} />
+        <View style={{ height: 40 }} />
       </ScrollView>
     </SafeAreaView>
   );
@@ -981,5 +1016,53 @@ const styles = StyleSheet.create({
   infoVersion: {
     ...Typography.caption,
     color: Colors.text.muted,
+  },
+
+  // MacroSection
+  macroSection: {
+    gap: 16,
+  },
+  macroHeader: {
+    gap: 4,
+    paddingHorizontal: 4,
+  },
+  macroTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  macroTitle: {
+    ...Typography.h3,
+    color: Colors.text.primary,
+  },
+  macroSubtitle: {
+    ...Typography.caption,
+    color: Colors.text.muted,
+  },
+  macroContent: {
+    gap: 16,
+  },
+  expBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: Colors.semantic.warning + '18',
+    borderRadius: Radius.full ?? 99,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderWidth: 1,
+    borderColor: Colors.semantic.warning + '40',
+  },
+  expBadgeText: {
+    ...Typography.micro,
+    color: Colors.semantic.warning,
+    fontWeight: '600',
+  },
+  dangerWarning: {
+    ...Typography.caption,
+    color: Colors.semantic.danger,
+    paddingHorizontal: 4,
+    marginTop: -8,
+    lineHeight: 18,
   },
 });

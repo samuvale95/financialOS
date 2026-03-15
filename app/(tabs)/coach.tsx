@@ -247,7 +247,7 @@ function ScoreRing({ score }: { score: number | null }) {
             <Text style={[s.ringScore, { color: Colors.text.muted, fontSize: 13 }]}>—</Text>
           </View>
         </View>
-        <Text style={[s.ringLabel, { color: Colors.text.muted }]}>Dati insufficienti</Text>
+        <Text style={[s.ringLabel, { color: Colors.text.muted }]}>Insufficienti</Text>
       </View>
     );
   }
