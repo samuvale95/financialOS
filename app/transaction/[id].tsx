@@ -13,7 +13,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
-import { Colors, Typography, Radius, Spacing } from '../../constants/theme';
+import { Colors, Typography, Radius, Spacing, Touch } from '../../constants/theme';
 import { CATEGORIES, EXPENSE_CATEGORIES } from '../../constants/categories';
 import type { CategoryId } from '../../constants/categories';
 import { ProgressBar } from '../../components/ui/ProgressBar';
@@ -507,9 +507,9 @@ const styles = StyleSheet.create({
   },
   headerTitle: { ...Typography.h3, color: Colors.text.primary },
   backBtn2: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    width: Touch.sm,
+    height: Touch.sm,
+    borderRadius: Touch.sm / 2,
     backgroundColor: Colors.bg.card,
     justifyContent: 'center',
     alignItems: 'center',

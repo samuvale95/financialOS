@@ -11,7 +11,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import Svg, { Polyline, Line } from 'react-native-svg';
-import { Colors, Typography, Radius } from '../../constants/theme';
+import { Colors, Typography, Radius, Touch } from '../../constants/theme';
 import { useData } from '../../contexts/DataContext';
 
 const SCREEN_W = Dimensions.get('window').width;
@@ -205,9 +205,9 @@ const styles = StyleSheet.create({
   },
   headerTitle: { ...Typography.h3, color: Colors.text.primary, flex: 1, textAlign: 'center' },
   backBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    width: Touch.sm,
+    height: Touch.sm,
+    borderRadius: Touch.sm / 2,
     backgroundColor: Colors.bg.card,
     justifyContent: 'center',
     alignItems: 'center',

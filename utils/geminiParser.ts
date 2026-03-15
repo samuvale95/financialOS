@@ -96,6 +96,7 @@ async function streamGeminiRequest(
   parts: GeminiPart[],
   logLabel: string,
   endpoint: string,
+  timeoutMs = 120_000,
 ): Promise<string> {
   const body = JSON.stringify({
     contents: [{ parts }],
@@ -108,15 +109,14 @@ async function streamGeminiRequest(
   const modelName = endpoint.includes('lite') ? 'gemini-2.5-flash-lite' : 'gemini-2.5-flash';
   console.log(`[Gemini] → stream | ${logLabel} | ${modelName} | ${(body.length / 1024).toFixed(1)}KB`);
 
-  const TIMEOUT_MS = 120_000;
   const t0 = Date.now();
 
   return new Promise<string>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open('POST', `${endpoint}?key=${GEMINI_API_KEY}`);
     xhr.setRequestHeader('Content-Type', 'application/json');
-    xhr.timeout = TIMEOUT_MS;
-    xhr.ontimeout = () => reject(new Error(`Gemini: timeout dopo ${TIMEOUT_MS / 1000} secondi.`));
+    xhr.timeout = timeoutMs;
+    xhr.ontimeout = () => reject(new Error(`Gemini: timeout dopo ${timeoutMs / 1000} secondi.`));
     xhr.onerror = () => reject(new Error('Gemini: errore di rete. Verifica la connessione internet.'));
 
     let accText = '';
@@ -258,7 +258,7 @@ export async function parseWithGemini(
       { inline_data: { mime_type: 'application/pdf', data: base64 } },
     ];
     const label = `"${fileName}" | PDF nativo`;
-    const rawText = await streamGeminiRequest(parts, label, GEMINI_ENDPOINT_FULL);
+    const rawText = await streamGeminiRequest(parts, label, GEMINI_ENDPOINT_FULL, 240_000);
     console.log('[Gemini] output grezzo (primi 200 chars):\n', rawText.slice(0, 200));
     const result = parseGeminiJSON(rawText);
     appendChunkLog(0, 1, `[PDF nativo ${(base64.length * 0.75 / 1024).toFixed(0)}KB]`, rawText, result.transactions.length);

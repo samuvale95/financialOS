@@ -9,7 +9,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
-import { Colors, Typography, Radius } from '../../constants/theme';
+import { Colors, Typography, Radius, Touch } from '../../constants/theme';
 import { DayGroup } from '../../components/spese/DayGroup';
 import { useData } from '../../contexts/DataContext';
 import { useAnalysis } from '../../contexts/AnalysisContext';
@@ -68,6 +68,52 @@ const SORT_MODES: { key: SortMode; label: string; icon: string }[] = [
   { key: 'amount_desc', label: 'Importo ↓', icon: 'trending-down' },
   { key: 'amount_asc', label: 'Importo ↑', icon: 'trending-up' },
 ];
+
+// ── Data Quality Bar ──────────────────────────────────────────────────────────
+
+function DataQualityBar({
+  classified,
+  total,
+  pct,
+  onClassify,
+}: {
+  classified: number;
+  total: number;
+  pct: number;
+  onClassify: () => void;
+}) {
+  if (total === 0) return null;
+  const barColor = pct >= 0.7 ? Colors.semantic.success : '#FFB347';
+  const pctRounded = Math.round(pct * 100);
+
+  return (
+    <View style={dq.wrap}>
+      <View style={dq.row}>
+        <Text style={dq.text}>
+          Classificate: <Text style={dq.textBold}>{classified}</Text>
+          <Text> su {total}</Text>
+        </Text>
+        <Text style={[dq.pct, { color: barColor }]}>{pctRounded}%</Text>
+      </View>
+      <View style={dq.barBg}>
+        <View style={[dq.barFill, { width: `${pctRounded}%` as any, backgroundColor: barColor }]} />
+      </View>
+      {pct < 0.7 && (
+        <View style={dq.banner}>
+          <View style={dq.bannerInfo}>
+            <Ionicons name="information-circle-outline" size={14} color="#7A5200" />
+            <Text style={dq.bannerText}>
+              Più transazioni classificate = analisi più accurate
+            </Text>
+          </View>
+          <TouchableOpacity style={dq.bannerBtn} onPress={onClassify} activeOpacity={0.8}>
+            <Text style={dq.bannerBtnText}>Classifica →</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+    </View>
+  );
+}
 
 // ── Category Breakdown component ──────────────────────────────────────────────
 
@@ -177,10 +223,16 @@ export default function SpeseScreen() {
     [transactions, selectedMonth]
   );
 
+  const expenseCount = useMemo(
+    () => monthTransactions.filter((t) => t.amount < 0 && t.category !== 'transfer').length,
+    [monthTransactions]
+  );
   const unclassifiedCount = useMemo(
     () => monthTransactions.filter((t) => t.category === 'other' && t.amount < 0).length,
     [monthTransactions]
   );
+  const classifiedCount = expenseCount - unclassifiedCount;
+  const classificationPct = expenseCount > 0 ? classifiedCount / expenseCount : 1;
 
   // Expense categories that appear in month transactions
   const expenseCategories = useMemo(() => {
@@ -247,24 +299,17 @@ export default function SpeseScreen() {
       {/* Month selector strip */}
       <MonthSelectorStrip />
 
-      {/* Unclassified banner */}
-      {unclassifiedCount > 0 && (
-        <TouchableOpacity
-          style={styles.unclassifiedBanner}
-          activeOpacity={0.8}
-          onPress={() => {
-            setFilter('expense');
-            setCategoryFilter('other' as CategoryId);
-            setActiveTab('list');
-          }}
-        >
-          <Ionicons name="help-circle" size={16} color={Colors.semantic.warning} />
-          <Text style={styles.unclassifiedText}>
-            {unclassifiedCount} {unclassifiedCount === 1 ? 'spesa' : 'spese'} da classificare · Aiuta l'AI a imparare
-          </Text>
-          <Ionicons name="chevron-forward" size={14} color={Colors.semantic.warning} />
-        </TouchableOpacity>
-      )}
+      {/* Data quality bar */}
+      <DataQualityBar
+        classified={classifiedCount}
+        total={expenseCount}
+        pct={classificationPct}
+        onClassify={() => {
+          setFilter('expense');
+          setCategoryFilter('other' as CategoryId);
+          setActiveTab('list');
+        }}
+      />
 
       {/* Summary Row */}
       <View style={styles.summaryRow}>
@@ -481,9 +526,9 @@ const styles = StyleSheet.create({
     color: Colors.text.primary,
   },
   searchBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: Touch.sm,
+    height: Touch.sm,
+    borderRadius: Touch.sm / 2,
     backgroundColor: Colors.bg.card,
     justifyContent: 'center',
     alignItems: 'center',
@@ -585,8 +630,8 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   sortBtn: {
-    width: 36,
-    height: 36,
+    width: Touch.sm,
+    height: Touch.sm,
     borderRadius: Radius.md,
     backgroundColor: Colors.bg.card,
     borderWidth: 1,
@@ -597,25 +642,6 @@ const styles = StyleSheet.create({
   sortBtnActive: {
     borderColor: Colors.accent.primary,
     backgroundColor: Colors.accent.glow,
-  },
-  unclassifiedBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginHorizontal: 16,
-    marginBottom: 10,
-    backgroundColor: Colors.semantic.warning + '15',
-    borderRadius: Radius.md,
-    borderWidth: 1,
-    borderColor: Colors.semantic.warning + '40',
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-  },
-  unclassifiedText: {
-    ...Typography.caption,
-    color: Colors.semantic.warning,
-    fontWeight: '600',
-    flex: 1,
   },
   catFilterScroll: {
     marginBottom: 8,
@@ -679,6 +705,51 @@ const styles = StyleSheet.create({
     lineHeight: 20,
     marginBottom: 4,
   },
+});
+
+// Data quality bar styles
+const dq = StyleSheet.create({
+  wrap: {
+    marginHorizontal: 16,
+    marginBottom: 10,
+    gap: 6,
+  },
+  row: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  text: { ...Typography.micro, color: Colors.text.muted },
+  textBold: { color: Colors.text.secondary, fontWeight: '700' },
+  pct: { ...Typography.micro, fontWeight: '700' },
+  barBg: {
+    height: 4,
+    backgroundColor: Colors.border.default,
+    borderRadius: 2,
+    overflow: 'hidden',
+  },
+  barFill: { height: 4, borderRadius: 2 },
+  banner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+    backgroundColor: '#FFB347' + '18',
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: '#FFB347' + '44',
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  bannerInfo: { flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 },
+  bannerText: { ...Typography.micro, color: '#7A5200', flex: 1, lineHeight: 16 },
+  bannerBtn: {
+    backgroundColor: '#FFB347',
+    borderRadius: Radius.sm,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  bannerBtnText: { ...Typography.micro, color: '#000', fontWeight: '700' },
 });
 
 // Category breakdown styles

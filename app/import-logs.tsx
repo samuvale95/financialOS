@@ -19,7 +19,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
-import { Colors, Typography, Radius, Spacing } from '../constants/theme';
+import { Colors, Typography, Radius, Spacing, Touch } from '../constants/theme';
 import { loadImportLogs, clearImportLogs } from '../utils/importLogger';
 import type { ImportLogSession, ChunkLog } from '../utils/importLogger';
 
@@ -55,6 +55,12 @@ function tierLabel(tier?: string): string {
   if (tier === 'L3_full_ai') return 'Full AI';
   if (!tier) return 'Sconosciuto';
   return tier;
+}
+
+function sessionStatusInfo(session: ImportLogSession): { color: string; label: string } {
+  if (session.error) return { color: Colors.semantic.danger, label: 'Errore' };
+  if (session.warning) return { color: Colors.semantic.warning, label: 'Attenzione' };
+  return { color: Colors.semantic.success, label: 'OK' };
 }
 
 // ── ChunkDetail ────────────────────────────────────────────────────────────────
@@ -135,6 +141,7 @@ function SessionCard({ session }: { session: ImportLogSession }) {
   const [expanded, setExpanded] = useState(false);
   const color = tierColor(session.tier);
   const hasChunks = session.chunks.length > 0;
+  const si = sessionStatusInfo(session);
 
   const handleShare = async () => {
     let text = `=== LOG IMPORTAZIONE ===\n`;
@@ -168,7 +175,7 @@ function SessionCard({ session }: { session: ImportLogSession }) {
   };
 
   return (
-    <View style={[s.sessionCard, session.error && s.sessionCardError]}>
+    <View style={[s.sessionCard, session.error && s.sessionCardError, session.warning && !session.error && s.sessionCardWarning]}>
       {/* Header row */}
       <TouchableOpacity
         style={s.sessionHeader}
@@ -182,9 +189,18 @@ function SessionCard({ session }: { session: ImportLogSession }) {
           <View style={{ flex: 1 }}>
             <Text style={s.sessionFileName} numberOfLines={1}>{session.fileName}</Text>
             <Text style={s.sessionDate}>{fmtDate(session.startedAt)}</Text>
+            {session.warning && (
+              <View style={s.warningRow}>
+                <Ionicons name="warning-outline" size={11} color={Colors.semantic.warning} />
+                <Text style={s.warningMicro} numberOfLines={2}>{session.warning}</Text>
+              </View>
+            )}
           </View>
         </View>
         <View style={s.sessionRight}>
+          <View style={[s.statusChip, { backgroundColor: si.color + '22', borderColor: si.color + '66' }]}>
+            <Text style={[s.statusChipText, { color: si.color }]}>{si.label}</Text>
+          </View>
           <Text style={s.sessionModel}>{session.model}</Text>
           <Ionicons
             name={expanded ? 'chevron-up' : 'chevron-down'}
@@ -348,9 +364,9 @@ const s = StyleSheet.create({
     gap: 12,
   },
   backBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    width: Touch.sm,
+    height: Touch.sm,
+    borderRadius: Touch.sm / 2,
     backgroundColor: Colors.bg.elevated,
     alignItems: 'center',
     justifyContent: 'center',
@@ -424,6 +440,32 @@ const s = StyleSheet.create({
   },
   sessionCardError: {
     borderColor: Colors.semantic.danger + '66',
+  },
+  sessionCardWarning: {
+    borderColor: Colors.semantic.warning + '66',
+  },
+  statusChip: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: Radius.full ?? 99,
+    borderWidth: 1,
+  },
+  statusChipText: {
+    ...Typography.micro,
+    fontWeight: '700',
+    letterSpacing: 0.4,
+  },
+  warningRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 4,
+    marginTop: 3,
+  },
+  warningMicro: {
+    ...Typography.micro,
+    color: Colors.semantic.warning,
+    flex: 1,
+    lineHeight: 15,
   },
   sessionHeader: {
     flexDirection: 'row',

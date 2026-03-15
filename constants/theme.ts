@@ -72,6 +72,13 @@ export const Typography = {
   micro: { fontSize: 11, fontWeight: '500' as const, lineHeight: 14 },
 } as const;
 
+export const Touch = {
+  xs: 32,
+  sm: 40,
+  md: 44,
+  lg: 48,
+} as const;
+
 export const Shadow = {
   card: {
     shadowColor: '#000',

@@ -1,13 +1,14 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import {
-  ScrollView, View, Text, StyleSheet,
-  TouchableOpacity,
+  View, Text, StyleSheet,
+  TouchableOpacity, ScrollView,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import Svg, { Polyline, Rect, Line, Text as SvgText } from 'react-native-svg';
 import { Colors, Typography, Radius } from '../../constants/theme';
+import { Page, PageSection } from '../../components/layout/Page';
+import { Card, AccentCard } from '../../components/ui/Card';
 import { useData } from '../../contexts/DataContext';
 import { analyzeSpending, getBudgetForecast, analyzeHistory } from '../../utils/spendingAnalyzer';
 import type { BudgetForecast, MonthlySnapshot } from '../../utils/spendingAnalyzer';
@@ -191,20 +192,18 @@ function HistoryChartsSection({ snapshots }: { snapshots: MonthlySnapshot[] }) {
     Colors.semantic.danger;
 
   return (
-    <View style={{ gap: 12 }}>
-      <Text style={s.sectionTitlePlain}>Andamento 6 mesi</Text>
-
+    <PageSection title="Andamento 6 mesi">
       {/* Trend spese */}
-      <View style={s.chartCard}>
+      <Card padding={10} style={{ alignItems: 'center', gap: 8 }}>
         <View style={s.chartHeader}>
           <Ionicons name="trending-up" size={14} color={Colors.accent.primary} />
           <Text style={s.chartTitle}>Uscite mensili</Text>
         </View>
         <TrendLineChart snapshots={withData} />
-      </View>
+      </Card>
 
       {/* Entrate vs Uscite */}
-      <View style={s.chartCard}>
+      <Card padding={10} style={{ alignItems: 'center', gap: 8 }}>
         <View style={s.chartHeader}>
           <Ionicons name="bar-chart" size={14} color={Colors.accent.primary} />
           <Text style={s.chartTitle}>Entrate vs Uscite</Text>
@@ -220,10 +219,10 @@ function HistoryChartsSection({ snapshots }: { snapshots: MonthlySnapshot[] }) {
             <Text style={s.legendLabel}>Uscite</Text>
           </View>
         </View>
-      </View>
+      </Card>
 
       {/* Tasso di risparmio */}
-      <View style={s.chartCard}>
+      <Card padding={10} style={{ alignItems: 'center', gap: 8 }}>
         <View style={s.chartHeader}>
           <Ionicons name="leaf" size={14} color={rateColor} />
           <Text style={s.chartTitle}>Tasso di risparmio</Text>
@@ -232,8 +231,8 @@ function HistoryChartsSection({ snapshots }: { snapshots: MonthlySnapshot[] }) {
           </Text>
         </View>
         <SavingsRateSparkline snapshots={withData} />
-      </View>
-    </View>
+      </Card>
+    </PageSection>
   );
 }
 
@@ -498,7 +497,7 @@ interface QuestionCardProps {
 
 function QuestionCard({ question, onAnswer, onDismiss }: QuestionCardProps) {
   return (
-    <View style={s.questionCard}>
+    <AccentCard padding={18} style={{ gap: 12 }}>
       <View style={s.questionHeader}>
         <View style={[s.questionIconWrap, { backgroundColor: question.iconColor + '20' }]}>
           <Ionicons name={question.icon as any} size={20} color={question.iconColor} />
@@ -523,20 +522,37 @@ function QuestionCard({ question, onAnswer, onDismiss }: QuestionCardProps) {
           </TouchableOpacity>
         ))}
       </View>
-    </View>
+    </AccentCard>
   );
 }
 
 // ── Recommendation card ───────────────────────────────────────────────────────
 
-function RecommendationCard({ rec, onNext }: { rec: CoachRecommendation; onNext: () => void }) {
+function RecommendationCard({
+  rec,
+  onNext,
+  analysisMonth,
+  questionIdx,
+  questionsLength,
+}: {
+  rec: CoachRecommendation;
+  onNext: () => void;
+  analysisMonth: string;
+  questionIdx: number;
+  questionsLength: number;
+}) {
   const accentColor =
     rec.type === 'positive' ? Colors.semantic.success :
     rec.type === 'action' ? Colors.accent.primary :
     Colors.semantic.warning;
 
+  const monthLabel = new Date(analysisMonth + '-01').toLocaleDateString('it-IT', {
+    month: 'long',
+    year: 'numeric',
+  });
+
   return (
-    <View style={[s.recCard, { borderColor: accentColor + '40' }]}>
+    <Card padding={18} style={{ gap: 12, borderColor: accentColor + '40' }}>
       <View style={s.recHeader}>
         <Ionicons
           name={rec.type === 'positive' ? 'checkmark-circle' : rec.type === 'action' ? 'bulb' : 'information-circle'}
@@ -552,10 +568,20 @@ function RecommendationCard({ rec, onNext }: { rec: CoachRecommendation; onNext:
           <Text style={s.savingText}>Risparmio potenziale: €{rec.potentialSaving}/mese</Text>
         </View>
       )}
+      <View style={s.recMeta}>
+        <Text style={s.recMonthNote}>
+          Basato sui dati di {monthLabel}
+        </Text>
+        {questionsLength > 3 && (
+          <Text style={s.recCounter}>
+            Domanda {questionIdx + 1} di {questionsLength}
+          </Text>
+        )}
+      </View>
       <TouchableOpacity style={s.nextBtn} onPress={onNext} activeOpacity={0.7}>
         <Text style={s.nextBtnText}>Prossima domanda →</Text>
       </TouchableOpacity>
-    </View>
+    </Card>
   );
 }
 
@@ -566,9 +592,8 @@ function BudgetForecastCard({ forecasts }: { forecasts: BudgetForecast[] }) {
   if (top.length === 0) return null;
 
   return (
-    <View>
-      <Text style={s.sectionTitlePlain}>Previsioni budget</Text>
-      <View style={s.forecastCard}>
+    <PageSection title="Previsioni budget">
+      <Card padding={0} style={{ borderColor: Colors.semantic.warning + '40', overflow: 'hidden' }}>
         {top.map((f) => {
           const rowColor = f.status === 'over_pace' ? '#FF6B6B' : '#FFB347';
           return (
@@ -589,8 +614,8 @@ function BudgetForecastCard({ forecasts }: { forecasts: BudgetForecast[] }) {
             </View>
           );
         })}
-      </View>
-    </View>
+      </Card>
+    </PageSection>
   );
 }
 
@@ -600,9 +625,8 @@ function PersistentInsightsPanel({ insights }: { insights: PersistentInsight[] }
   if (insights.length === 0) return null;
 
   return (
-    <View>
-      <Text style={s.sectionTitlePlain}>Situazione attuale</Text>
-      <View style={s.tipsPanel}>
+    <PageSection title="Situazione attuale">
+      <Card padding={0} style={{ overflow: 'hidden' }}>
         {insights.map((ins) => {
           const borderColor =
             ins.trend === 'positive' ? '#00D68F' :
@@ -620,8 +644,8 @@ function PersistentInsightsPanel({ insights }: { insights: PersistentInsight[] }
             </View>
           );
         })}
-      </View>
-    </View>
+      </Card>
+    </PageSection>
   );
 }
 
@@ -630,7 +654,7 @@ function PersistentInsightsPanel({ insights }: { insights: PersistentInsight[] }
 function UnclassifiedCard({ count }: { count: number }) {
   if (count === 0) return null;
   return (
-    <View style={s.unclassCard}>
+    <Card style={{ flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: Colors.semantic.warning + '10', borderColor: Colors.semantic.warning + '40' }}>
       <View style={s.unclassLeft}>
         <Text style={s.unclassTitle}>
           {count} {count === 1 ? 'spesa' : 'spese'} da classificare
@@ -644,6 +668,33 @@ function UnclassifiedCard({ count }: { count: number }) {
       >
         <Text style={s.unclassBtnText}>Classifica →</Text>
       </TouchableOpacity>
+    </Card>
+  );
+}
+
+// ── Coach TOC ─────────────────────────────────────────────────────────────────
+
+function CoachToc({
+  onPressCoach,
+  onPressAnalisi,
+}: {
+  onPressCoach: () => void;
+  onPressAnalisi: () => void;
+}) {
+  return (
+    <View style={s.toc}>
+      <View style={s.tocDivider} />
+      <View style={s.tocPillRow}>
+        <TouchableOpacity style={s.tocPill} onPress={onPressCoach} activeOpacity={0.7}>
+          <Ionicons name="sparkles" size={12} color={Colors.accent.primary} />
+          <Text style={s.tocPillLabel}>Coach</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={[s.tocPill, s.tocPillSecondary]} onPress={onPressAnalisi} activeOpacity={0.7}>
+          <Ionicons name="analytics-outline" size={12} color={Colors.text.secondary} />
+          <Text style={[s.tocPillLabel, { color: Colors.text.secondary }]}>Analisi dettagliata</Text>
+        </TouchableOpacity>
+      </View>
+      <View style={s.tocDivider} />
     </View>
   );
 }
@@ -688,9 +739,12 @@ export default function CoachScreen() {
   );
   const history = useMemo(() => analyzeHistory(transactions, budgets, 6), [transactions, budgets]);
   const unclassifiedCount = useMemo(
-    () => transactions.filter((t) => t.category === 'other' && t.amount < 0).length,
-    [transactions]
+    () => currentMonthTx.filter((t) => t.category === 'other' && t.amount < 0).length,
+    [currentMonthTx]
   );
+
+  const scrollViewRef = useRef<ScrollView>(null);
+  const analysisSectionY = useRef(0);
 
   const [questionIdx, setQuestionIdx] = useState(0);
   const [activeRec, setActiveRec] = useState<CoachRecommendation | null>(null);
@@ -711,6 +765,7 @@ export default function CoachScreen() {
   const handleNext = () => {
     setActiveRec(null);
     setQuestionIdx((i) => i + 1);
+    scrollViewRef.current?.scrollTo({ y: 0, animated: true });
   };
 
   const visibleCategories = useMemo(() => {
@@ -725,131 +780,120 @@ export default function CoachScreen() {
 
   const hasData = transactions.length > 0;
 
+  const subtitle = hasData
+    ? `Analisi di ${new Date(analysis.analysisMonth + '-01').toLocaleDateString('it-IT', { month: 'long', year: 'numeric' })}`
+    : 'Analisi personalizzata';
+
+  const aiChip = (
+    <View style={s.aiChip}>
+      <Ionicons name="sparkles" size={14} color={Colors.accent.primary} />
+      <Text style={s.aiChipText}>AI</Text>
+    </View>
+  );
+
   return (
-    <SafeAreaView style={s.safe} edges={['top']}>
-      <ScrollView
-        style={s.scroll}
-        contentContainerStyle={s.content}
-        showsVerticalScrollIndicator={false}
-      >
-        {/* Header */}
-        <View style={s.header}>
-          <View>
-            <Text style={s.title}>Coach AI</Text>
-            <Text style={s.subtitle}>
-              {hasData
-                ? `Analisi del mese di ${new Date(analysis.analysisMonth + '-01').toLocaleDateString('it-IT', { month: 'long', year: 'numeric' })}`
-                : 'Analisi personalizzata'}
+    <Page title="Coach AI" subtitle={subtitle} gap={20} rightAction={aiChip} scrollViewRef={scrollViewRef}>
+      {/* Month selector */}
+      <MonthSelectorStrip />
+
+      {/* Score + factors — padding compacted */}
+      <Card padding={14} style={{ flexDirection: 'row', alignItems: 'center', gap: 20 }}>
+        <ScoreRing score={analysis.score} />
+        <View style={s.factorsWrap}>
+          {analysis.score === null ? (
+            <Text style={s.scoreInsufficient}>
+              Dati insufficienti per calcolare lo score
             </Text>
-          </View>
-          <View style={s.aiChip}>
-            <Ionicons name="sparkles" size={14} color={Colors.accent.primary} />
-            <Text style={s.aiChipText}>AI</Text>
-          </View>
-        </View>
-
-        {/* Month selector */}
-        <MonthSelectorStrip />
-
-        {/* Score + factors */}
-        <View style={s.scoreCard}>
-          <ScoreRing score={analysis.score} />
-          <View style={s.factorsWrap}>
-            {analysis.score === null ? (
-              <Text style={s.scoreInsufficient}>
-                Dati insufficienti per calcolare lo score
-              </Text>
-            ) : (
-              analysis.scoreFactors.map((f) => {
-                const ptColor =
-                  f.points < 0 ? Colors.semantic.danger :
-                  f.points > 0 ? Colors.semantic.success :
-                  Colors.text.muted;
-                return (
-                  <View key={f.label} style={s.factorRow}>
-                    <Ionicons name={f.icon as any} size={13} color={ptColor} />
-                    <View style={{ flex: 1 }}>
-                      <Text style={s.factorLabel}>{f.label}</Text>
-                      {f.description && (
-                        <Text style={s.factorDesc}>{f.description}</Text>
-                      )}
-                    </View>
-                    <Text style={[s.factorPts, { color: ptColor }]}>
-                      {f.points > 0 ? '+' : ''}{f.points}
-                    </Text>
+          ) : (
+            analysis.scoreFactors.map((f) => {
+              const ptColor =
+                f.points < 0 ? Colors.semantic.danger :
+                f.points > 0 ? Colors.semantic.success :
+                Colors.text.muted;
+              return (
+                <View key={f.label} style={s.factorRow}>
+                  <Ionicons name={f.icon as any} size={13} color={ptColor} />
+                  <View style={{ flex: 1 }}>
+                    <Text style={s.factorLabel}>{f.label}</Text>
+                    {f.description && (
+                      <Text style={s.factorDesc}>{f.description}</Text>
+                    )}
                   </View>
-                );
-              })
-            )}
-          </View>
+                  <Text style={[s.factorPts, { color: ptColor }]}>
+                    {f.points > 0 ? '+' : ''}{f.points}
+                  </Text>
+                </View>
+              );
+            })
+          )}
         </View>
+      </Card>
 
-        {/* No data state */}
-        {!hasData && (
-          <View style={s.emptyCard}>
-            <Ionicons name="analytics-outline" size={48} color={Colors.text.muted} />
-            <Text style={s.emptyTitle}>Nessun dato disponibile</Text>
-            <Text style={s.emptyBody}>
-              Importa le tue transazioni per ricevere analisi dettagliate, domande personalizzate e consigli specifici sulle tue abitudini di spesa.
-            </Text>
-            <TouchableOpacity
-              style={s.emptyBtn}
-              activeOpacity={0.8}
-              onPress={() => router.push('/(tabs)/importa')}
-            >
-              <Text style={s.emptyBtnText}>Importa Dati</Text>
-            </TouchableOpacity>
-          </View>
-        )}
+      {/* No data state */}
+      {!hasData && (
+        <Card padding={32} style={{ borderRadius: Radius.xl, alignItems: 'center', gap: 12 }}>
+          <Ionicons name="analytics-outline" size={48} color={Colors.text.muted} />
+          <Text style={s.emptyTitle}>Nessun dato disponibile</Text>
+          <Text style={s.emptyBody}>
+            Importa le tue transazioni per ricevere analisi dettagliate, domande personalizzate e consigli specifici sulle tue abitudini di spesa.
+          </Text>
+          <TouchableOpacity
+            style={s.emptyBtn}
+            activeOpacity={0.8}
+            onPress={() => router.push('/(tabs)/importa')}
+          >
+            <Text style={s.emptyBtnText}>Importa Dati</Text>
+          </TouchableOpacity>
+        </Card>
+      )}
 
-        {hasData && (
-          <SectionErrorBoundary label="Analisi Coach non disponibile">
+      {/* ── Sezione 1: Coach ─────────────────────────────────────────────── */}
+      {hasData && (
+        <SectionErrorBoundary label="Analisi Coach non disponibile">
           <>
             {/* Active question or recommendation */}
             {activeQuestion && !activeRec && (
-              <View>
-                <View style={s.sectionHeader}>
-                  <Ionicons name="chatbubble-ellipses" size={16} color={Colors.accent.primary} />
-                  <Text style={s.sectionTitle}>Domanda per te</Text>
-                  {questions.length > 1 && (
-                    <Text style={s.questionCounter}>{questionIdx + 1}/{questions.length}</Text>
-                  )}
-                </View>
+              <PageSection
+                iconName="chatbubble-ellipses"
+                title="Domanda per te"
+                rightLabel={questions.length > 1 ? `${questionIdx + 1}/${questions.length}` : undefined}
+              >
                 <QuestionCard
                   question={activeQuestion}
                   onAnswer={(tag, rec) => handleAnswer(activeQuestion.id, tag, rec)}
                   onDismiss={() => handleDismiss(activeQuestion.id)}
                 />
-              </View>
+              </PageSection>
             )}
 
             {activeRec && (
-              <View>
-                <View style={s.sectionHeader}>
-                  <Ionicons name="chatbubble-ellipses" size={16} color={Colors.accent.primary} />
-                  <Text style={s.sectionTitle}>Il mio consiglio</Text>
-                </View>
-                <RecommendationCard rec={activeRec} onNext={handleNext} />
-              </View>
+              <PageSection iconName="chatbubble-ellipses" title="Il mio consiglio">
+                <RecommendationCard
+                  rec={activeRec}
+                  onNext={handleNext}
+                  analysisMonth={analysis.analysisMonth}
+                  questionIdx={questionIdx}
+                  questionsLength={questions.length}
+                />
+              </PageSection>
             )}
 
             {!activeQuestion && !activeRec && questions.length === 0 && (
-              <View style={s.allDoneCard}>
+              <Card padding={20} style={{ borderColor: Colors.semantic.success + '30', alignItems: 'center', gap: 10 }}>
                 <Ionicons name="checkmark-circle" size={32} color={Colors.semantic.success} />
                 <Text style={s.allDoneTitle}>Tutto sotto controllo!</Text>
                 <Text style={s.allDoneBody}>
                   Hai risposto a tutte le domande di questo mese. Importa i dati del mese prossimo per nuove analisi.
                 </Text>
-              </View>
+              </Card>
             )}
 
             <UnclassifiedCard count={unclassifiedCount} />
             <BudgetForecastCard forecasts={budgetForecasts} />
             <PersistentInsightsPanel insights={[...persistentInsights, ...taxInsights]} />
-            <HistoryChartsSection snapshots={history} />
 
             {/* Summary stats bar */}
-            <View style={s.statsBar}>
+            <Card padding={12} style={{ flexDirection: 'row', justifyContent: 'space-around' }}>
               <View style={s.statItem}>
                 <Text style={s.statValue}>€{analysis.totalExpenses.toFixed(0)}</Text>
                 <Text style={s.statLabel}>Uscite</Text>
@@ -871,7 +915,7 @@ export default function CoachScreen() {
                 </Text>
                 <Text style={s.statLabel}>Budget superati</Text>
               </View>
-            </View>
+            </Card>
 
             {/* Monthly insights highlights */}
             {visibleCategories.length > 0 && (() => {
@@ -885,8 +929,7 @@ export default function CoachScreen() {
               const highlights = [overBudget, bigIncrease, bestSaving].filter(Boolean);
               if (highlights.length === 0) return null;
               return (
-                <View>
-                  <Text style={s.sectionTitlePlain}>Highlights di questo mese</Text>
+                <PageSection title="Highlights di questo mese">
                   <View style={s.highlightList}>
                     {overBudget && (
                       <View style={[s.highlightRow, { borderLeftColor: Colors.semantic.danger }]}>
@@ -922,47 +965,74 @@ export default function CoachScreen() {
                       </View>
                     )}
                   </View>
-                </View>
+                </PageSection>
               );
             })()}
-
-            {/* Category analysis */}
-            {visibleCategories.length > 0 && (
-              <View>
-                <Text style={s.sectionTitlePlain}>Analisi per categoria</Text>
-                <Text style={s.sectionSub}>Tocca per vedere le spese dettagliate</Text>
-                <View style={s.catList}>
-                  {visibleCategories.map((ca) => (
-                    <CategoryCard
-                      key={ca.category}
-                      ca={ca}
-                      totalExpenses={analysis.totalExpenses}
-                    />
-                  ))}
-                </View>
-              </View>
-            )}
           </>
-          </SectionErrorBoundary>
-        )}
+        </SectionErrorBoundary>
+      )}
 
-        <View style={{ height: 20 }} />
-      </ScrollView>
-    </SafeAreaView>
+      {/* ── TOC pill row ──────────────────────────────────────────────────── */}
+      {hasData && (
+        <CoachToc
+          onPressCoach={() => scrollViewRef.current?.scrollTo({ y: 0, animated: true })}
+          onPressAnalisi={() => scrollViewRef.current?.scrollTo({ y: analysisSectionY.current, animated: true })}
+        />
+      )}
+
+      {/* ── Sezione 2: Analisi dettagliata ───────────────────────────────── */}
+      {hasData && (
+        <View
+          style={{ gap: 20 }}
+          onLayout={(e) => { analysisSectionY.current = e.nativeEvent.layout.y; }}
+        >
+          <SectionErrorBoundary label="Analisi dettagliata non disponibile">
+            <>
+              <HistoryChartsSection snapshots={history} />
+
+              {/* Category analysis */}
+              {visibleCategories.length > 0 && (
+                <PageSection title="Analisi per categoria" subtitle="Tocca per vedere le spese dettagliate">
+                  <View style={s.catList}>
+                    {visibleCategories.map((ca) => (
+                      <CategoryCard
+                        key={ca.category}
+                        ca={ca}
+                        totalExpenses={analysis.totalExpenses}
+                      />
+                    ))}
+                  </View>
+                </PageSection>
+              )}
+            </>
+          </SectionErrorBoundary>
+        </View>
+      )}
+    </Page>
   );
 }
 
 // ── Styles ────────────────────────────────────────────────────────────────────
 
 const s = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: Colors.bg.primary },
-  scroll: { flex: 1 },
-  content: { paddingHorizontal: 16, paddingTop: 8, gap: 20 },
+  // TOC pill row
+  toc: { gap: 10 },
+  tocDivider: { height: 1, backgroundColor: Colors.border.default },
+  tocPillRow: { flexDirection: 'row', justifyContent: 'center', gap: 10 },
+  tocPill: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    paddingHorizontal: 14, paddingVertical: 8,
+    borderRadius: Radius.full,
+    backgroundColor: Colors.accent.glow,
+    borderWidth: 1, borderColor: Colors.border.accent,
+  },
+  tocPillSecondary: {
+    backgroundColor: Colors.bg.card,
+    borderColor: Colors.border.default,
+  },
+  tocPillLabel: { ...Typography.caption, color: Colors.accent.primary, fontWeight: '600' },
 
-  // Header
-  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
-  title: { ...Typography.h1, color: Colors.text.primary },
-  subtitle: { ...Typography.caption, color: Colors.text.secondary },
+  // AI chip
   aiChip: {
     flexDirection: 'row', alignItems: 'center', gap: 4,
     backgroundColor: Colors.accent.glow,
@@ -971,12 +1041,7 @@ const s = StyleSheet.create({
   },
   aiChipText: { ...Typography.caption, color: Colors.accent.primary, fontWeight: '700' },
 
-  // Score card
-  scoreCard: {
-    backgroundColor: Colors.bg.card, borderRadius: Radius.lg, padding: 20,
-    flexDirection: 'row', alignItems: 'center', gap: 20,
-    borderWidth: 1, borderColor: Colors.border.default,
-  },
+  // Score ring
   ringContainer: { alignItems: 'center', gap: 8 },
   ringOuter: {
     width: 92, height: 92, borderRadius: 46,
@@ -997,18 +1062,7 @@ const s = StyleSheet.create({
   factorPts: { ...Typography.caption, fontWeight: '700' },
   scoreInsufficient: { ...Typography.caption, color: Colors.text.muted, fontStyle: 'italic' },
 
-  // Section headers
-  sectionHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 10 },
-  sectionTitle: { ...Typography.h3, color: Colors.text.primary, flex: 1 },
-  sectionTitlePlain: { ...Typography.h3, color: Colors.text.primary, marginBottom: 4 },
-  sectionSub: { ...Typography.caption, color: Colors.text.secondary, marginBottom: 12 },
-  questionCounter: { ...Typography.caption, color: Colors.text.muted },
-
-  // Question card
-  questionCard: {
-    backgroundColor: Colors.bg.card, borderRadius: Radius.lg, padding: 18,
-    borderWidth: 1, borderColor: Colors.border.accent, gap: 12,
-  },
+  // Question card internals
   questionHeader: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   questionIconWrap: { width: 36, height: 36, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
   questionTitleWrap: { flex: 1 },
@@ -1022,11 +1076,7 @@ const s = StyleSheet.create({
   },
   optionLabel: { ...Typography.bodyMedium, color: Colors.text.primary, fontWeight: '600', textAlign: 'center' },
 
-  // Recommendation card
-  recCard: {
-    backgroundColor: Colors.bg.card, borderRadius: Radius.lg, padding: 18,
-    borderWidth: 1, gap: 12,
-  },
+  // Recommendation card internals
   recHeader: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   recTitle: { ...Typography.bodyMedium, fontWeight: '700', flex: 1 },
   recBody: { ...Typography.caption, color: Colors.text.secondary, lineHeight: 19 },
@@ -1037,6 +1087,23 @@ const s = StyleSheet.create({
     alignSelf: 'flex-start',
   },
   savingText: { ...Typography.caption, color: Colors.semantic.success, fontWeight: '600' },
+  recMeta: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 8,
+  },
+  recMonthNote: {
+    ...Typography.micro,
+    color: Colors.text.muted,
+    fontStyle: 'italic',
+    flex: 1,
+  },
+  recCounter: {
+    ...Typography.micro,
+    color: Colors.text.muted,
+    fontWeight: '600',
+  },
   nextBtn: {
     backgroundColor: Colors.accent.primary + '15',
     borderRadius: Radius.md, paddingVertical: 13,
@@ -1044,12 +1111,7 @@ const s = StyleSheet.create({
   },
   nextBtnText: { ...Typography.bodyMedium, color: Colors.accent.primary, fontWeight: '700' },
 
-  // Stats bar
-  statsBar: {
-    flexDirection: 'row', backgroundColor: Colors.bg.card,
-    borderRadius: Radius.lg, borderWidth: 1, borderColor: Colors.border.default,
-    padding: 16, justifyContent: 'space-around',
-  },
+  // Stats bar internals
   statItem: { alignItems: 'center', gap: 3 },
   statValue: { ...Typography.bodyMedium, color: Colors.text.primary, fontWeight: '700' },
   statLabel: { ...Typography.micro, color: Colors.text.secondary },
@@ -1162,12 +1224,7 @@ const s = StyleSheet.create({
   // Chevron
   chevronRow: { alignItems: 'center', marginTop: 2 },
 
-  // Empty / all done
-  emptyCard: {
-    backgroundColor: Colors.bg.card, borderRadius: Radius.xl,
-    borderWidth: 1, borderColor: Colors.border.default,
-    padding: 32, alignItems: 'center', gap: 12,
-  },
+  // Empty / all done text styles
   emptyTitle: { ...Typography.h3, color: Colors.text.primary },
   emptyBody: { ...Typography.caption, color: Colors.text.secondary, textAlign: 'center', lineHeight: 20 },
   emptyBtn: {
@@ -1175,12 +1232,6 @@ const s = StyleSheet.create({
     paddingHorizontal: 24, paddingVertical: 12, borderRadius: Radius.lg,
   },
   emptyBtnText: { ...Typography.bodyMedium, color: '#fff', fontWeight: '600' },
-
-  allDoneCard: {
-    backgroundColor: Colors.bg.card, borderRadius: Radius.lg,
-    borderWidth: 1, borderColor: Colors.semantic.success + '30',
-    padding: 20, alignItems: 'center', gap: 10,
-  },
   allDoneTitle: { ...Typography.h3, color: Colors.text.primary },
   allDoneBody: { ...Typography.caption, color: Colors.text.secondary, textAlign: 'center', lineHeight: 20 },
 
@@ -1197,15 +1248,7 @@ const s = StyleSheet.create({
   highlightLabel: { ...Typography.micro, color: Colors.text.secondary },
   highlightValue: { ...Typography.caption, color: Colors.text.primary, fontWeight: '600' },
 
-  // Budget Forecast
-  forecastCard: {
-    backgroundColor: Colors.bg.card,
-    borderRadius: Radius.lg,
-    borderWidth: 1,
-    borderColor: Colors.semantic.warning + '40',
-    overflow: 'hidden',
-    gap: 0,
-  },
+  // Budget Forecast internals
   forecastRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1221,14 +1264,7 @@ const s = StyleSheet.create({
   forecastBody: { ...Typography.micro, color: Colors.text.secondary },
   forecastPace: { ...Typography.bodyMedium, fontWeight: '800' },
 
-  // Persistent Insights Panel
-  tipsPanel: {
-    backgroundColor: Colors.bg.card,
-    borderRadius: Radius.lg,
-    borderWidth: 1,
-    borderColor: Colors.border.default,
-    overflow: 'hidden',
-  },
+  // Persistent Insights Panel internals
   tipRow: {
     flexDirection: 'row',
     alignItems: 'flex-start',
@@ -1251,16 +1287,7 @@ const s = StyleSheet.create({
   tipTitle: { ...Typography.caption, color: Colors.text.primary, fontWeight: '700' },
   tipText: { ...Typography.micro, color: Colors.text.secondary, lineHeight: 16 },
 
-  // Chart cards
-  chartCard: {
-    backgroundColor: Colors.bg.card,
-    borderRadius: Radius.lg,
-    borderWidth: 1,
-    borderColor: Colors.border.default,
-    padding: 14,
-    gap: 10,
-    alignItems: 'center',
-  },
+  // Chart card internals
   chartHeader: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1292,17 +1319,7 @@ const s = StyleSheet.create({
     color: Colors.text.secondary,
   },
 
-  // Unclassified card
-  unclassCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    backgroundColor: Colors.semantic.warning + '10',
-    borderRadius: Radius.lg,
-    borderWidth: 1,
-    borderColor: Colors.semantic.warning + '40',
-    padding: 14,
-  },
+  // Unclassified card internals
   unclassLeft: { flex: 1, gap: 3 },
   unclassTitle: { ...Typography.caption, color: Colors.semantic.warning, fontWeight: '700' },
   unclassSub: { ...Typography.micro, color: Colors.text.secondary },

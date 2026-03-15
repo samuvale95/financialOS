@@ -24,6 +24,7 @@ export interface ImportEventLog {
   processingTimeMs: number;   // durata totale parseFn
   transactionsExtracted: number;
   bankName: string;
+  warning?: string;
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────────────

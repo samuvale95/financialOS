@@ -12,7 +12,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import * as Haptics from 'expo-haptics';
-import { Colors, Typography, Radius } from '../constants/theme';
+import { Colors, Typography, Radius, Touch } from '../constants/theme';
 import { CATEGORIES, EXPENSE_CATEGORIES, INCOME_CATEGORIES } from '../constants/categories';
 import type { CategoryId } from '../constants/categories';
 import { useData } from '../contexts/DataContext';
@@ -500,9 +500,9 @@ const styles = StyleSheet.create({
   },
   title: { ...Typography.h3, color: Colors.text.primary },
   closeBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: Touch.sm,
+    height: Touch.sm,
+    borderRadius: Touch.sm / 2,
     backgroundColor: Colors.bg.card,
     justifyContent: 'center',
     alignItems: 'center',

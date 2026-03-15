@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   View,
   Text,
@@ -10,7 +10,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
-import { Colors, Typography, Radius, Spacing } from '../constants/theme';
+import { Colors, Typography, Radius, Spacing, Touch } from '../constants/theme';
 import {
   loadImportAnalytics,
   clearImportAnalytics,
@@ -74,6 +74,8 @@ function formatCost(usd: number): string {
 export default function ImportAnalyticsScreen() {
   const [events, setEvents] = useState<ImportEventLog[]>([]);
   const [loading, setLoading] = useState(true);
+  const scrollRef = useRef<ScrollView>(null);
+  const cronologiaY = useRef(0);
 
   useEffect(() => {
     loadImportAnalytics().then((data) => {
@@ -134,6 +136,7 @@ export default function ImportAnalyticsScreen() {
       </View>
 
       <ScrollView
+        ref={scrollRef}
         style={s.scroll}
         contentContainerStyle={s.content}
         showsVerticalScrollIndicator={false}
@@ -151,6 +154,22 @@ export default function ImportAnalyticsScreen() {
           </View>
         ) : (
           <>
+            {/* ── Warning banner (last event has warning) ───────────────── */}
+            {events[0]?.warning && (
+              <View style={s.warningBanner}>
+                <Ionicons name="warning-outline" size={16} color={Colors.semantic.warning} />
+                <Text style={s.warningBannerText}>
+                  Ultimo file parzialmente importato: alcune righe potrebbero mancare
+                </Text>
+                <TouchableOpacity
+                  onPress={() => scrollRef.current?.scrollTo({ y: cronologiaY.current, animated: true })}
+                  activeOpacity={0.7}
+                >
+                  <Text style={s.warningBannerLink}>Vedi dettagli</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
             {/* ── Summary ─────────────────────────────────────────────────── */}
             <View style={s.section}>
               <Text style={s.sectionTitle}>RIEPILOGO</Text>
@@ -257,7 +276,10 @@ export default function ImportAnalyticsScreen() {
             )}
 
             {/* ── History ──────────────────────────────────────────────────── */}
-            <View style={s.section}>
+            <View
+              style={s.section}
+              onLayout={(e) => { cronologiaY.current = e.nativeEvent.layout.y; }}
+            >
               <Text style={s.sectionTitle}>CRONOLOGIA ({events.length})</Text>
               <View style={s.card}>
                 {events.map((ev, i) => (
@@ -266,10 +288,18 @@ export default function ImportAnalyticsScreen() {
                     <View style={s.eventRow}>
                       <View style={[s.tierDot, { backgroundColor: TIER_COLOR[ev.tier] }]} />
                       <View style={s.eventBody}>
-                        <Text style={s.eventFile} numberOfLines={1}>{ev.fileName}</Text>
+                        <View style={s.eventFileRow}>
+                          <Text style={s.eventFile} numberOfLines={1}>{ev.fileName}</Text>
+                          {ev.warning && (
+                            <Ionicons name="warning-outline" size={13} color={Colors.semantic.warning} />
+                          )}
+                        </View>
                         <Text style={s.eventMeta}>
                           {formatDate(ev.timestamp)} · {TIER_LABEL[ev.tier]} · {MODEL_LABEL[ev.model]}
                         </Text>
+                        {ev.warning && (
+                          <Text style={s.eventWarningText} numberOfLines={2}>{ev.warning}</Text>
+                        )}
                         <View style={s.eventStats}>
                           <Text style={s.eventStatText}>{ev.bankName}</Text>
                           <View style={s.dot} />
@@ -332,7 +362,7 @@ const s = StyleSheet.create({
     borderBottomColor: Colors.border.default,
   },
   backBtn: {
-    width: 40, height: 40, borderRadius: 20,
+    width: Touch.sm, height: Touch.sm, borderRadius: Touch.sm / 2,
     backgroundColor: Colors.bg.card,
     justifyContent: 'center', alignItems: 'center',
     borderWidth: 1, borderColor: Colors.border.default,
@@ -473,6 +503,30 @@ const s = StyleSheet.create({
   modelNum: { ...Typography.h2, color: Colors.text.primary },
   modelLabel: { ...Typography.caption, color: Colors.text.muted },
 
+  // Warning banner
+  warningBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: Colors.semantic.warning + '18',
+    borderWidth: 1,
+    borderColor: Colors.semantic.warning + '55',
+    borderRadius: Radius.md,
+    padding: 12,
+  },
+  warningBannerText: {
+    ...Typography.caption,
+    color: Colors.semantic.warning,
+    flex: 1,
+    lineHeight: 18,
+  },
+  warningBannerLink: {
+    ...Typography.caption,
+    color: Colors.semantic.warning,
+    fontWeight: '700',
+    textDecorationLine: 'underline',
+  },
+
   // Events
   eventRow: {
     flexDirection: 'row',
@@ -481,7 +535,9 @@ const s = StyleSheet.create({
     paddingVertical: 12,
   },
   eventBody: { flex: 1, gap: 3 },
-  eventFile: { ...Typography.bodyMedium, color: Colors.text.primary, fontWeight: '600' },
+  eventFileRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+  eventFile: { ...Typography.bodyMedium, color: Colors.text.primary, fontWeight: '600', flex: 1 },
+  eventWarningText: { ...Typography.micro, color: Colors.semantic.warning, lineHeight: 15 },
   eventMeta: { ...Typography.caption, color: Colors.text.secondary },
   eventStats: { flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
   eventStatText: { ...Typography.micro, color: Colors.text.muted },

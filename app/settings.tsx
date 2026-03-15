@@ -12,7 +12,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
-import { Colors, Typography, Radius, Spacing } from '../constants/theme';
+import { Colors, Typography, Radius, Spacing, Touch } from '../constants/theme';
 import { useSettings } from '../contexts/SettingsContext';
 import { hasGemini } from '../utils/geminiParser';
 import { useData } from '../contexts/DataContext';
@@ -703,9 +703,9 @@ const styles = StyleSheet.create({
     color: Colors.text.primary,
   },
   closeBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: Touch.sm,
+    height: Touch.sm,
+    borderRadius: Touch.sm / 2,
     backgroundColor: Colors.bg.card,
     justifyContent: 'center',
     alignItems: 'center',

@@ -40,6 +40,7 @@ export interface ImportLogSession {
   totalExpenses: number;   // somma uscite (<0) in euro (valore assoluto)
   processingTimeMs: number;
   error?: string;
+  warning?: string;
 }
 
 // ── Singleton in-memory session ───────────────────────────────────────────────
@@ -105,6 +106,7 @@ export async function finishLogSession(
   processingTimeMs: number,
   tier?: string,
   errorMessage?: string,
+  warningMessage?: string,
 ): Promise<void> {
   if (!_activeSession) return;
   const session = _activeSession;
@@ -131,6 +133,7 @@ export async function finishLogSession(
     totalExpenses,
     processingTimeMs,
     error: errorMessage,
+    warning: warningMessage,
   };
 
   try {

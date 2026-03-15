@@ -12,7 +12,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import * as Haptics from 'expo-haptics';
-import { Colors, Typography, Radius } from '../constants/theme';
+import { Colors, Typography, Radius, Touch } from '../constants/theme';
 import { useData } from '../contexts/DataContext';
 import type { Goal } from '../types';
 
@@ -291,9 +291,9 @@ const styles = StyleSheet.create({
   },
   title: { ...Typography.h3, color: Colors.text.primary },
   closeBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: Touch.sm,
+    height: Touch.sm,
+    borderRadius: Touch.sm / 2,
     backgroundColor: Colors.bg.card,
     justifyContent: 'center',
     alignItems: 'center',
@@ -301,9 +301,9 @@ const styles = StyleSheet.create({
     borderColor: Colors.border.default,
   },
   addBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: Touch.sm,
+    height: Touch.sm,
+    borderRadius: Touch.sm / 2,
     backgroundColor: Colors.accent.glow,
     justifyContent: 'center',
     alignItems: 'center',
@@ -403,9 +403,9 @@ const styles = StyleSheet.create({
   goalDates: { ...Typography.caption, color: Colors.text.muted, marginTop: 2 },
   goalActions: { flexDirection: 'row', gap: 4 },
   actionBtn: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+    width: Touch.xs,
+    height: Touch.xs,
+    borderRadius: Touch.xs / 2,
     backgroundColor: Colors.bg.secondary,
     justifyContent: 'center',
     alignItems: 'center',

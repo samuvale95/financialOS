@@ -22,15 +22,16 @@ function formatDate(dateStr: string): string {
 
 interface GoalCardProps {
   goal: Goal;
+  padding?: number;
 }
 
-export function GoalCard({ goal }: GoalCardProps) {
+export function GoalCard({ goal, padding }: GoalCardProps) {
   const progress = goal.savedAmount / goal.targetAmount;
   const percent = Math.round(progress * 100);
   const remaining = goal.targetAmount - goal.savedAmount;
 
   return (
-    <Card style={StyleSheet.flatten([styles.card, { borderColor: `${goal.color}30` }])}>
+    <Card padding={padding} style={StyleSheet.flatten([styles.card, { borderColor: `${goal.color}30` }])}>
       <View style={styles.header}>
         <Text style={styles.emoji}>{goal.emoji}</Text>
         <View style={styles.info}>

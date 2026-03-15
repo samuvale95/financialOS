@@ -184,7 +184,9 @@ export default function ImportaScreen() {
       const tier: ImportTier = result._tier ?? 'L3_full_ai';
       const model: ImportModel = tier === 'L1_cache' ? 'none' : 'gemini';
 
-      await finishLogSession(result.transactions, elapsed, tier);
+      const truncWarning = result.truncationWarning?.message;
+
+      await finishLogSession(result.transactions, elapsed, tier, undefined, truncWarning);
 
       logImportEvent({
         fileName: name,
@@ -194,6 +196,7 @@ export default function ImportaScreen() {
         processingTimeMs: elapsed,
         transactionsExtracted: result.transactions.length,
         bankName: result.bankName,
+        ...(truncWarning ? { warning: truncWarning } : {}),
       }).catch(() => {});
 
       return result;

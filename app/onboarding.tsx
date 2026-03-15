@@ -20,7 +20,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
-import { Colors, Typography, Radius, Spacing } from '../constants/theme';
+import { Colors, Typography, Radius, Spacing, Touch } from '../constants/theme';
 import { useData } from '../contexts/DataContext';
 import { useSettings } from '../contexts/SettingsContext';
 import { saveOnboardingData } from '../utils/storage';
@@ -129,7 +129,15 @@ const INIT_STATE: WizardState = {
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const PROGRESS_STEPS = 10; // steps 1–10 show progress bar
+const PROGRESS_STEPS = 11; // steps 1–11 show progress indicator
+
+const PHASES: { label: string; steps: readonly number[] }[] = [
+  { label: 'Profilo',    steps: [1, 2] },
+  { label: 'Casa',       steps: [3, 4, 5] },
+  { label: 'Patrimonio', steps: [6, 7, 8] },
+  { label: 'Obiettivi',  steps: [9] },
+  { label: 'Analisi',    steps: [10, 11] },
+];
 
 const ITALIAN_REGIONS = [
   'Abruzzo', 'Basilicata', 'Calabria', 'Campania', 'Emilia-Romagna',
@@ -430,14 +438,34 @@ function isStepValid(state: WizardState): boolean {
 
 // ── Shared UI components ──────────────────────────────────────────────────────
 
-function ProgressBar({ step, total }: { step: number; total: number }) {
-  const pct = Math.min(1, step / total);
+function PhaseIndicator({ step }: { step: number }) {
+  const currentIdx = PHASES.findIndex(p => p.steps.includes(step));
   return (
-    <View style={ui.progressContainer}>
-      <View style={ui.progressTrack}>
-        <View style={[ui.progressFill, { width: `${pct * 100}%` as `${number}%` }]} />
-      </View>
-      <Text style={ui.progressLabel}>{step} di {total}</Text>
+    <View style={ui.phaseRow}>
+      {PHASES.map((phase, i) => {
+        const isDone = i < currentIdx;
+        const isActive = i === currentIdx;
+        return (
+          <React.Fragment key={phase.label}>
+            {i > 0 && (
+              <View style={[ui.phaseConnector, isDone && ui.phaseConnectorDone]} />
+            )}
+            {isDone ? (
+              <View style={ui.phaseDotDone}>
+                <Ionicons name="checkmark" size={9} color="#fff" />
+              </View>
+            ) : isActive ? (
+              <View style={ui.phasePillActive}>
+                <Text style={ui.phasePillActiveText}>{phase.label}</Text>
+              </View>
+            ) : (
+              <View style={ui.phaseDotFuture}>
+                <Text style={ui.phaseDotNumText}>{i + 1}</Text>
+              </View>
+            )}
+          </React.Fragment>
+        );
+      })}
     </View>
   );
 }
@@ -1214,7 +1242,7 @@ export default function OnboardingScreen() {
         return (
           <>
             <Text style={s.stepTitle}>Chi sei</Text>
-            <Text style={s.stepSubtitle}>Informazioni di base per personalizzare i tuoi budget</Text>
+            <Text style={s.stepSubtitle}>Useremo questi dati per proporti un budget realistico e per il tuo profilo fiscale</Text>
 
             <Text style={s.fieldLabel}>Nome (opzionale)</Text>
             <TextInput
@@ -1270,7 +1298,7 @@ export default function OnboardingScreen() {
         return (
           <>
             <Text style={s.stepTitle}>Stile di vita</Text>
-            <Text style={s.stepSubtitle}>Personalizziamo i budget in base alle tue abitudini</Text>
+            <Text style={s.stepSubtitle}>Sport, viaggi e ristoranti avranno budget calibrati sulle tue abitudini reali</Text>
 
             <Text style={s.fieldLabel}>Attività sportiva</Text>
             <View style={s.housingGrid}>
@@ -1346,9 +1374,9 @@ export default function OnboardingScreen() {
         return (
           <>
             <Text style={s.stepTitle}>Dove vivi</Text>
-            <Text style={s.stepSubtitle}>Il costo della vita varia molto tra regioni — questo ci permette di calibrare i budget</Text>
+            <Text style={s.stepSubtitle}>Regione e abitazione incidono sul costo della vita — rendiamo i tuoi budget più precisi</Text>
 
-            <Text style={s.fieldLabel}>Regione *</Text>
+            <Text style={s.fieldLabel}>Regione (opzionale)</Text>
             <TouchableOpacity
               style={[ui.textInput, s.regionPicker]}
               onPress={() => setShowRegionPicker(v => !v)}
@@ -1403,7 +1431,7 @@ export default function OnboardingScreen() {
             {(state.housingType === 'renter' || state.housingType === 'owner') && (
               <>
                 <Text style={[s.fieldLabel, { marginTop: 20 }]}>
-                  {state.housingType === 'renter' ? 'Affitto mensile (€)' : 'Rata mutuo mensile (€, opzionale)'}
+                  {state.housingType === 'renter' ? 'Affitto mensile (€, opzionale)' : 'Rata mutuo mensile (€, opzionale)'}
                 </Text>
                 <TextInput
                   style={ui.textInput}
@@ -1423,7 +1451,7 @@ export default function OnboardingScreen() {
         return (
           <>
             <Text style={s.stepTitle}>Lavoro & Stabilità</Text>
-            <Text style={s.stepSubtitle}>La tua situazione lavorativa influenza quanto dovresti tenere come riserva</Text>
+            <Text style={s.stepSubtitle}>La stabilità lavorativa determina la riserva di emergenza ideale e la tua deducibilità fiscale</Text>
 
             <Text style={s.fieldLabel}>Tipo di lavoro *</Text>
             <View style={s.workGrid}>
@@ -1477,7 +1505,7 @@ export default function OnboardingScreen() {
         return (
           <>
             <Text style={s.stepTitle}>Le tue entrate</Text>
-            <Text style={s.stepSubtitle}>Inserisci tutte le fonti di reddito, anche quelle occasionali</Text>
+            <Text style={s.stepSubtitle}>Il reddito complessivo è la base per calcolare percentuali di risparmio reali e tasse dovute</Text>
 
             {state.incomeSources.length > 0 && (
               <View style={s.incomeList}>
@@ -1518,7 +1546,7 @@ export default function OnboardingScreen() {
         return (
           <>
             <Text style={s.stepTitle}>I tuoi conti bancari</Text>
-            <Text style={s.stepSubtitle}>Aggiungi i saldi attuali per calcolare il tuo patrimonio netto</Text>
+            <Text style={s.stepSubtitle}>I saldi compongono il tuo patrimonio netto visibile in Dashboard — puoi aggiungere o modificare in seguito</Text>
 
             {state.accounts.length > 0 && (
               <View style={s.accountList}>
@@ -1565,7 +1593,7 @@ export default function OnboardingScreen() {
         return (
           <>
             <Text style={s.stepTitle}>Criptovalute</Text>
-            <Text style={s.stepSubtitle}>Hai già crypto nel portfolio? Le includiamo nel calcolo del patrimonio</Text>
+            <Text style={s.stepSubtitle}>Le crypto contribuiscono al patrimonio totale e al grafico di diversificazione del portfolio</Text>
 
             {state.hasCrypto === null && (
               <View style={s.yesNoCards}>
@@ -1601,7 +1629,7 @@ export default function OnboardingScreen() {
                     ))}
                   </View>
                 )}
-                <Text style={s.fieldLabel}>Cerca criptovaluta</Text>
+                <Text style={s.fieldLabel}>Cerca criptovaluta (opzionale, puoi aggiungere in seguito)</Text>
                 <AssetSearch assetType="crypto" onAdd={a => set({ cryptoAssets: [...state.cryptoAssets, a] })} />
               </>
             )}
@@ -1613,7 +1641,7 @@ export default function OnboardingScreen() {
         return (
           <>
             <Text style={s.stepTitle}>Investimenti</Text>
-            <Text style={s.stepSubtitle}>Hai già un portfolio? Lo includiamo nel calcolo del patrimonio</Text>
+            <Text style={s.stepSubtitle}>Azioni, ETF e obbligazioni vengono monitorati automaticamente con prezzi aggiornati</Text>
 
             {state.hasInvestments === null && (
               <View style={s.yesNoCards}>
@@ -1649,7 +1677,7 @@ export default function OnboardingScreen() {
                     ))}
                   </View>
                 )}
-                <Text style={s.fieldLabel}>Aggiungi investimento</Text>
+                <Text style={s.fieldLabel}>Aggiungi investimento (opzionale, puoi aggiungere in seguito)</Text>
                 <AssetSearch assetType="investment" onAdd={a => set({ assets: [...state.assets, a] })} />
               </>
             )}
@@ -1661,7 +1689,7 @@ export default function OnboardingScreen() {
         return (
           <>
             <Text style={s.stepTitle}>Obiettivi & Impegno</Text>
-            <Text style={s.stepSubtitle}>Queste scelte guidano la distribuzione dei tuoi budget mensili</Text>
+            <Text style={s.stepSubtitle}>Obiettivo e livello di impegno definiscono quanto risparmiare ogni mese in modo sostenibile</Text>
 
             <Text style={s.fieldLabel}>Qual è il tuo obiettivo principale? *</Text>
             <View style={s.goalGrid}>
@@ -1721,7 +1749,7 @@ export default function OnboardingScreen() {
           <>
             <Text style={s.stepTitle}>Estratti conto</Text>
             <Text style={s.stepSubtitle}>
-              Carica uno o più file. Se ci sono transazioni duplicate tra i file vengono rimosse automaticamente.
+              Importa i tuoi estratti per trasformare dati grezzi in analisi e budget basati sulle spese reali
             </Text>
 
             {/* Imported files list */}
@@ -2111,7 +2139,7 @@ export default function OnboardingScreen() {
           <Ionicons name="arrow-back" size={22} color={Colors.text.secondary} />
         </TouchableOpacity>
         {showProgress && (
-          <ProgressBar step={state.step} total={PROGRESS_STEPS} />
+          <PhaseIndicator step={state.step} />
         )}
         <View style={s.backBtn} />
       </View>
@@ -2261,13 +2289,18 @@ const ui = StyleSheet.create({
   stepperLabel: { ...Typography.bodyMedium, color: Colors.text.primary },
   stepperSublabel: { ...Typography.caption, color: Colors.text.muted, marginTop: 2 },
   stepperControls: { flexDirection: 'row', alignItems: 'center', gap: 16 },
-  stepperBtn: { width: 32, height: 32, borderRadius: 16, backgroundColor: Colors.bg.elevated, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: Colors.border.default },
+  stepperBtn: { width: Touch.xs, height: Touch.xs, borderRadius: Touch.xs / 2, backgroundColor: Colors.bg.elevated, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: Colors.border.default },
   stepperBtnDisabled: { opacity: 0.3 },
   stepperValue: { ...Typography.h3, color: Colors.text.primary, minWidth: 28, textAlign: 'center' },
-  progressContainer: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 8 },
-  progressTrack: { flex: 1, height: 4, backgroundColor: Colors.bg.elevated, borderRadius: 2 },
-  progressFill: { height: 4, backgroundColor: Colors.accent.primary, borderRadius: 2 },
-  progressLabel: { ...Typography.caption, color: Colors.text.muted, minWidth: 36, textAlign: 'right' },
+  // Phase indicator (replaces ProgressBar)
+  phaseRow: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 4, gap: 0 },
+  phaseConnector: { flex: 1, height: 1.5, backgroundColor: Colors.border.default, maxWidth: 18 },
+  phaseConnectorDone: { backgroundColor: Colors.semantic.success },
+  phaseDotDone: { width: 20, height: 20, borderRadius: 10, backgroundColor: Colors.semantic.success, justifyContent: 'center', alignItems: 'center' },
+  phaseDotFuture: { width: 20, height: 20, borderRadius: 10, backgroundColor: Colors.bg.elevated, borderWidth: 1, borderColor: Colors.border.default, justifyContent: 'center', alignItems: 'center' },
+  phaseDotNumText: { fontSize: 9, color: Colors.text.muted, fontWeight: '600' },
+  phasePillActive: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12, backgroundColor: Colors.accent.primary + '22', borderWidth: 1, borderColor: Colors.accent.primary },
+  phasePillActiveText: { fontSize: 11, color: Colors.accent.primary, fontWeight: '700', letterSpacing: 0.2 },
   pickerForm: { gap: Spacing.sm },
   bankRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: Colors.border.subtle },
   bankBadge: { width: 36, height: 36, borderRadius: 10, justifyContent: 'center', alignItems: 'center' },
@@ -2320,7 +2353,7 @@ const s = StyleSheet.create({
 
   // Layout
   topBar: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 10, gap: 8 },
-  backBtn: { width: 36, height: 36, borderRadius: 18, backgroundColor: Colors.bg.card, justifyContent: 'center', alignItems: 'center' },
+  backBtn: { width: Touch.sm, height: Touch.sm, borderRadius: Touch.sm / 2, backgroundColor: Colors.bg.card, justifyContent: 'center', alignItems: 'center' },
   content: { paddingHorizontal: 20, paddingTop: 16, gap: 16 },
   contentDone: { paddingHorizontal: 20, paddingTop: 40, paddingBottom: 40, gap: 16 },
   bottomActions: { paddingHorizontal: 20, paddingBottom: 28, paddingTop: 12, gap: 4, borderTopWidth: 1, borderTopColor: Colors.border.subtle, backgroundColor: Colors.bg.primary },

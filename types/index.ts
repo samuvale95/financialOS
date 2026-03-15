@@ -191,6 +191,7 @@ export interface WorkInfo {
 export interface OnboardingData {
   completed: boolean;
   completedAt?: string;
+  hasSeenOnboardingSummary?: boolean;
   monthlyIncome?: number;
   goals?: OnboardingGoalId[];
   incomeSources?: IncomeSource[];
