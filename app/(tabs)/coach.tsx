@@ -182,6 +182,7 @@ function SavingsRateSparkline({ snapshots }: { snapshots: MonthlySnapshot[] }) {
 }
 
 function HistoryChartsSection({ snapshots }: { snapshots: MonthlySnapshot[] }) {
+  const [moreExpanded, setMoreExpanded] = useState(false);
   const withData = snapshots.filter((s) => s.totalExpenses > 0 || s.monthIncome > 0);
   if (withData.length < 2) return null;
 
@@ -193,16 +194,7 @@ function HistoryChartsSection({ snapshots }: { snapshots: MonthlySnapshot[] }) {
 
   return (
     <PageSection title="Andamento 6 mesi">
-      {/* Trend spese */}
-      <Card padding={10} style={{ alignItems: 'center', gap: 8 }}>
-        <View style={s.chartHeader}>
-          <Ionicons name="trending-up" size={14} color={Colors.accent.primary} />
-          <Text style={s.chartTitle}>Uscite mensili</Text>
-        </View>
-        <TrendLineChart snapshots={withData} />
-      </Card>
-
-      {/* Entrate vs Uscite */}
+      {/* Entrate vs Uscite — always visible */}
       <Card padding={10} style={{ alignItems: 'center', gap: 8 }}>
         <View style={s.chartHeader}>
           <Ionicons name="bar-chart" size={14} color={Colors.accent.primary} />
@@ -221,17 +213,44 @@ function HistoryChartsSection({ snapshots }: { snapshots: MonthlySnapshot[] }) {
         </View>
       </Card>
 
-      {/* Tasso di risparmio */}
-      <Card padding={10} style={{ alignItems: 'center', gap: 8 }}>
-        <View style={s.chartHeader}>
-          <Ionicons name="leaf" size={14} color={rateColor} />
-          <Text style={s.chartTitle}>Tasso di risparmio</Text>
-          <Text style={[s.chartTitle, { color: rateColor, marginLeft: 'auto' }]}>
-            {currentRate.toFixed(0)}%
-          </Text>
-        </View>
-        <SavingsRateSparkline snapshots={withData} />
-      </Card>
+      {/* Accordion: altri grafici */}
+      <TouchableOpacity
+        style={s.chartAccordionTrigger}
+        onPress={() => setMoreExpanded((v) => !v)}
+        activeOpacity={0.7}
+      >
+        <Text style={s.chartAccordionLabel}>Altri grafici</Text>
+        <Ionicons
+          name={moreExpanded ? 'chevron-up' : 'chevron-down'}
+          size={14}
+          color={Colors.text.muted}
+        />
+      </TouchableOpacity>
+
+      {moreExpanded && (
+        <>
+          {/* Trend spese */}
+          <Card padding={10} style={{ alignItems: 'center', gap: 8 }}>
+            <View style={s.chartHeader}>
+              <Ionicons name="trending-up" size={14} color={Colors.accent.primary} />
+              <Text style={s.chartTitle}>Uscite mensili</Text>
+            </View>
+            <TrendLineChart snapshots={withData} />
+          </Card>
+
+          {/* Tasso di risparmio */}
+          <Card padding={10} style={{ alignItems: 'center', gap: 8 }}>
+            <View style={s.chartHeader}>
+              <Ionicons name="leaf" size={14} color={rateColor} />
+              <Text style={s.chartTitle}>Tasso di risparmio</Text>
+              <Text style={[s.chartTitle, { color: rateColor, marginLeft: 'auto' }]}>
+                {currentRate.toFixed(0)}%
+              </Text>
+            </View>
+            <SavingsRateSparkline snapshots={withData} />
+          </Card>
+        </>
+      )}
     </PageSection>
   );
 }
@@ -355,22 +374,22 @@ function CategoryCard({ ca, totalExpenses }: { ca: CategoryAnalysis; totalExpens
         </View>
       )}
 
-      {/* Merchant chips — always visible */}
-      {ca.topMerchants.length > 0 && (
-        <View style={s.merchantRow}>
-          {ca.topMerchants.slice(0, expanded ? 5 : 3).map((m) => (
-            <View key={m.name} style={[s.merchantChip, { borderLeftColor: ca.color }]}>
-              <Text style={s.merchantName} numberOfLines={1}>{m.name}</Text>
-              <Text style={s.merchantAmount}>€{m.total.toFixed(0)}</Text>
-              <Text style={s.merchantCount}>{m.count}×</Text>
-            </View>
-          ))}
-        </View>
-      )}
-
       {/* Expanded details */}
       {expanded && (
         <View style={s.expandedSection}>
+
+          {/* Merchant chips */}
+          {ca.topMerchants.length > 0 && (
+            <View style={s.merchantRow}>
+              {ca.topMerchants.map((m) => (
+                <View key={m.name} style={[s.merchantChip, { borderLeftColor: ca.color }]}>
+                  <Text style={s.merchantName} numberOfLines={1}>{m.name}</Text>
+                  <Text style={s.merchantAmount}>€{m.total.toFixed(0)}</Text>
+                  <Text style={s.merchantCount}>{m.count}×</Text>
+                </View>
+              ))}
+            </View>
+          )}
 
           {/* Quick stats row */}
           <View style={s.expandedStats}>
@@ -1042,19 +1061,19 @@ const s = StyleSheet.create({
   aiChipText: { ...Typography.caption, color: Colors.accent.primary, fontWeight: '700' },
 
   // Score ring
-  ringContainer: { alignItems: 'center', gap: 8 },
+  ringContainer: { alignItems: 'center', gap: 6 },
   ringOuter: {
-    width: 92, height: 92, borderRadius: 46,
-    borderWidth: 5, alignItems: 'center', justifyContent: 'center',
+    width: 82, height: 82, borderRadius: 41,
+    borderWidth: 4, alignItems: 'center', justifyContent: 'center',
   },
   ringInner: {
-    width: 74, height: 74, borderRadius: 37,
-    borderWidth: 2.5, alignItems: 'center', justifyContent: 'center',
+    width: 66, height: 66, borderRadius: 33,
+    borderWidth: 2, alignItems: 'center', justifyContent: 'center',
   },
   ringScoreRow: { flexDirection: 'row', alignItems: 'flex-end', gap: 1 },
-  ringScore: { fontSize: 26, fontWeight: '800', letterSpacing: -1, lineHeight: 30 },
-  ringMax: { fontSize: 11, fontWeight: '500', color: Colors.text.muted, marginBottom: 3 },
-  ringLabel: { ...Typography.micro, fontWeight: '700' },
+  ringScore: { fontSize: 22, fontWeight: '800', letterSpacing: -1, lineHeight: 26 },
+  ringMax: { fontSize: 10, fontWeight: '500', color: Colors.text.muted, marginBottom: 2 },
+  ringLabel: { ...Typography.micro, color: Colors.text.muted },
   factorsWrap: { flex: 1, gap: 10, paddingLeft: 8, borderLeftWidth: 1, borderLeftColor: Colors.border.default },
   factorRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 6 },
   factorLabel: { ...Typography.caption, color: Colors.text.secondary },
@@ -1317,6 +1336,18 @@ const s = StyleSheet.create({
   legendLabel: {
     ...Typography.micro,
     color: Colors.text.secondary,
+  },
+  chartAccordionTrigger: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 10,
+    paddingHorizontal: 4,
+  },
+  chartAccordionLabel: {
+    ...Typography.caption,
+    color: Colors.text.muted,
+    fontWeight: '600',
   },
 
   // Unclassified card internals
