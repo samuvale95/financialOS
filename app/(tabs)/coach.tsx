@@ -693,30 +693,98 @@ function UnclassifiedCard({ count }: { count: number }) {
   );
 }
 
-// ── Coach TOC ─────────────────────────────────────────────────────────────────
+// ── View tab switcher ─────────────────────────────────────────────────────────
 
-function CoachToc({
-  onPressCoach,
-  onPressAnalisi,
+type ActiveView = 'coach' | 'analisi';
+
+function ViewTabRow({
+  activeView,
+  onChange,
 }: {
-  onPressCoach: () => void;
-  onPressAnalisi: () => void;
+  activeView: ActiveView;
+  onChange: (v: ActiveView) => void;
 }) {
   return (
-    <View style={s.toc}>
-      <View style={s.tocDivider} />
-      <View style={s.tocPillRow}>
-        <TouchableOpacity style={s.tocPill} onPress={onPressCoach} activeOpacity={0.7}>
-          <Ionicons name="sparkles" size={12} color={Colors.accent.primary} />
-          <Text style={s.tocPillLabel}>Coach</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={[s.tocPill, s.tocPillSecondary]} onPress={onPressAnalisi} activeOpacity={0.7}>
-          <Ionicons name="analytics-outline" size={12} color={Colors.text.secondary} />
-          <Text style={[s.tocPillLabel, { color: Colors.text.secondary }]}>Analisi dettagliata</Text>
-        </TouchableOpacity>
-      </View>
-      <View style={s.tocDivider} />
+    <View style={s.viewTabRow}>
+      <TouchableOpacity
+        style={[s.viewTabBtn, activeView === 'coach' && s.viewTabBtnActive]}
+        onPress={() => onChange('coach')}
+        activeOpacity={0.7}
+      >
+        <Ionicons name="sparkles" size={14} color={activeView === 'coach' ? '#fff' : Colors.text.secondary} />
+        <Text style={[s.viewTabLabel, activeView === 'coach' && s.viewTabLabelActive]}>Coach</Text>
+      </TouchableOpacity>
+      <TouchableOpacity
+        style={[s.viewTabBtn, activeView === 'analisi' && s.viewTabBtnActive]}
+        onPress={() => onChange('analisi')}
+        activeOpacity={0.7}
+      >
+        <Ionicons name="analytics-outline" size={14} color={activeView === 'analisi' ? '#fff' : Colors.text.secondary} />
+        <Text style={[s.viewTabLabel, activeView === 'analisi' && s.viewTabLabelActive]}>Analisi</Text>
+      </TouchableOpacity>
     </View>
+  );
+}
+
+// ── Simple category row (Analisi tab) ─────────────────────────────────────────
+
+function CategoryRow({ ca, totalExpenses, month }: { ca: CategoryAnalysis; totalExpenses: number; month: string }) {
+  const statusColor =
+    ca.status === 'over' ? Colors.semantic.danger :
+    ca.status === 'warning' ? Colors.semantic.warning :
+    ca.status === 'ok' ? Colors.semantic.success :
+    Colors.text.muted;
+
+  const trendIcon = ca.vsLastMonth > 5 ? 'trending-up' : ca.vsLastMonth < -5 ? 'trending-down' : 'remove';
+  const trendColor = ca.vsLastMonth > 5 ? Colors.semantic.danger : ca.vsLastMonth < -5 ? Colors.semantic.success : Colors.text.muted;
+  const pct = totalExpenses > 0 ? (ca.monthTotal / totalExpenses * 100).toFixed(0) : '0';
+
+  return (
+    <TouchableOpacity
+      style={[s.catCard, ca.status === 'over' && s.catCardOver]}
+      activeOpacity={0.7}
+      onPress={() => router.push(`/category/${ca.category}?month=${month}` as any)}
+    >
+      <View style={s.catRow}>
+        <View style={[s.catIconWrap, { backgroundColor: ca.bgColor }]}>
+          <Ionicons name={ca.icon as any} size={18} color={ca.color} />
+        </View>
+        <View style={s.catInfo}>
+          <Text style={s.catLabel}>{ca.label}</Text>
+          <View style={s.catAmountRow}>
+            <Text style={s.catAmount}>€{ca.monthTotal.toFixed(0)}</Text>
+            {ca.budgetLimit > 0 && <Text style={s.catBudget}> / €{ca.budgetLimit}</Text>}
+            <Text style={s.catPct}> · {pct}%</Text>
+          </View>
+        </View>
+        <View style={s.catRight}>
+          <View style={[s.statusBadge, { backgroundColor: statusColor + '20' }]}>
+            <Text style={[s.statusText, { color: statusColor }]}>
+              {ca.status === 'over' ? `${Math.round(ca.budgetProgress * 100)}%` :
+               ca.status === 'warning' ? `${Math.round(ca.budgetProgress * 100)}%` :
+               ca.status === 'ok' ? 'OK' : '—'}
+            </Text>
+          </View>
+          {ca.vsLastMonth !== 0 && ca.prevMonthTotal > 0 && (
+            <View style={s.trendRow}>
+              <Ionicons name={trendIcon} size={11} color={trendColor} />
+              <Text style={[s.trendText, { color: trendColor }]}>
+                {ca.vsLastMonth > 0 ? '+' : ''}{Math.round(ca.vsLastMonth)}%
+              </Text>
+            </View>
+          )}
+        </View>
+        <Ionicons name="chevron-forward" size={14} color={Colors.text.muted} />
+      </View>
+      {ca.budgetLimit > 0 && (
+        <View style={s.barBg}>
+          <View style={[s.barFill, {
+            width: `${Math.min(100, ca.budgetProgress * 100)}%` as any,
+            backgroundColor: statusColor,
+          }]} />
+        </View>
+      )}
+    </TouchableOpacity>
   );
 }
 
@@ -777,7 +845,7 @@ export default function CoachScreen() {
   );
 
   const scrollViewRef = useRef<ScrollView>(null);
-  const analysisSectionY = useRef(0);
+  const [activeView, setActiveView] = useState<ActiveView>('coach');
 
   const [questionIdx, setQuestionIdx] = useState(0);
   const [activeRec, setActiveRec] = useState<CoachRecommendation | null>(null);
@@ -829,14 +897,20 @@ export default function CoachScreen() {
       {/* Month selector */}
       <MonthSelectorStrip />
 
-      {/* Score + factors — padding compacted */}
+      {/* Tab switcher */}
+      {hasData && (
+        <ViewTabRow activeView={activeView} onChange={(v) => {
+          setActiveView(v);
+          scrollViewRef.current?.scrollTo({ y: 0, animated: false });
+        }} />
+      )}
+
+      {/* Score + factors */}
       <Card padding={14} style={{ flexDirection: 'row', alignItems: 'center', gap: 20 }}>
         <ScoreRing score={analysis.score} />
         <View style={s.factorsWrap}>
           {analysis.score === null ? (
-            <Text style={s.scoreInsufficient}>
-              Dati insufficienti per calcolare lo score
-            </Text>
+            <Text style={s.scoreInsufficient}>Dati insufficienti per calcolare lo score</Text>
           ) : (
             analysis.scoreFactors.map((f) => {
               const ptColor =
@@ -848,9 +922,7 @@ export default function CoachScreen() {
                   <Ionicons name={f.icon as any} size={13} color={ptColor} />
                   <View style={{ flex: 1 }}>
                     <Text style={s.factorLabel}>{f.label}</Text>
-                    {f.description && (
-                      <Text style={s.factorDesc}>{f.description}</Text>
-                    )}
+                    {f.description && <Text style={s.factorDesc}>{f.description}</Text>}
                   </View>
                   <Text style={[s.factorPts, { color: ptColor }]}>
                     {f.points > 0 ? '+' : ''}{f.points}
@@ -870,21 +942,16 @@ export default function CoachScreen() {
           <Text style={s.emptyBody}>
             Importa le tue transazioni per ricevere analisi dettagliate, domande personalizzate e consigli specifici sulle tue abitudini di spesa.
           </Text>
-          <TouchableOpacity
-            style={s.emptyBtn}
-            activeOpacity={0.8}
-            onPress={() => router.push('/(tabs)/importa')}
-          >
+          <TouchableOpacity style={s.emptyBtn} activeOpacity={0.8} onPress={() => router.push('/(tabs)/importa')}>
             <Text style={s.emptyBtnText}>Importa Dati</Text>
           </TouchableOpacity>
         </Card>
       )}
 
-      {/* ── Sezione 1: Coach ─────────────────────────────────────────────── */}
-      {hasData && (
+      {/* ── Tab Coach ─────────────────────────────────────────────────────── */}
+      {hasData && activeView === 'coach' && (
         <SectionErrorBoundary label="Analisi Coach non disponibile">
           <>
-            {/* Active question or recommendation */}
             {activeQuestion && !activeRec && (
               <PageSection
                 iconName="chatbubble-ellipses"
@@ -935,7 +1002,7 @@ export default function CoachScreen() {
               <View style={s.statItem}>
                 <Text style={[
                   s.statValue,
-                  { color: analysis.savingsRate >= 20 ? Colors.semantic.success : analysis.savingsRate >= 10 ? Colors.semantic.warning : Colors.semantic.danger }
+                  { color: analysis.savingsRate >= 20 ? Colors.semantic.success : analysis.savingsRate >= 10 ? Colors.semantic.warning : Colors.semantic.danger },
                 ]}>
                   {analysis.savingsRate.toFixed(0)}%
                 </Text>
@@ -950,7 +1017,7 @@ export default function CoachScreen() {
               </View>
             </Card>
 
-            {/* Monthly insights highlights */}
+            {/* Highlights */}
             {visibleCategories.length > 0 && (() => {
               const overBudget = [...analysis.problemCategories].sort((a, b) => b.budgetProgress - a.budgetProgress)[0];
               const bigIncrease = [...analysis.categories]
@@ -959,8 +1026,7 @@ export default function CoachScreen() {
               const bestSaving = [...analysis.categories]
                 .filter((c) => c.vsLastMonth < -15 && c.prevMonthTotal > 0 && c.monthTotal > 0)
                 .sort((a, b) => a.vsLastMonth - b.vsLastMonth)[0];
-              const highlights = [overBudget, bigIncrease, bestSaving].filter(Boolean);
-              if (highlights.length === 0) return null;
+              if (!overBudget && !bigIncrease && !bestSaving) return null;
               return (
                 <PageSection title="Highlights di questo mese">
                   <View style={s.highlightList}>
@@ -969,9 +1035,7 @@ export default function CoachScreen() {
                         <Ionicons name="alert-circle" size={16} color={Colors.semantic.danger} />
                         <View style={s.highlightInfo}>
                           <Text style={s.highlightLabel}>Categoria più sopra budget</Text>
-                          <Text style={s.highlightValue}>
-                            {overBudget.label}: {Math.round(overBudget.budgetProgress * 100)}% utilizzato
-                          </Text>
+                          <Text style={s.highlightValue}>{overBudget.label}: {Math.round(overBudget.budgetProgress * 100)}% utilizzato</Text>
                         </View>
                       </View>
                     )}
@@ -980,9 +1044,7 @@ export default function CoachScreen() {
                         <Ionicons name="trending-up" size={16} color={Colors.semantic.warning} />
                         <View style={s.highlightInfo}>
                           <Text style={s.highlightLabel}>Maggior aumento vs mese scorso</Text>
-                          <Text style={s.highlightValue}>
-                            {bigIncrease.label}: +{Math.round(bigIncrease.vsLastMonth)}%
-                          </Text>
+                          <Text style={s.highlightValue}>{bigIncrease.label}: +{Math.round(bigIncrease.vsLastMonth)}%</Text>
                         </View>
                       </View>
                     )}
@@ -991,9 +1053,7 @@ export default function CoachScreen() {
                         <Ionicons name="leaf" size={16} color={Colors.semantic.success} />
                         <View style={s.highlightInfo}>
                           <Text style={s.highlightLabel}>Maggior risparmio vs mese scorso</Text>
-                          <Text style={s.highlightValue}>
-                            {bestSaving.label}: {Math.round(bestSaving.vsLastMonth)}%
-                          </Text>
+                          <Text style={s.highlightValue}>{bestSaving.label}: {Math.round(bestSaving.vsLastMonth)}%</Text>
                         </View>
                       </View>
                     )}
@@ -1005,41 +1065,39 @@ export default function CoachScreen() {
         </SectionErrorBoundary>
       )}
 
-      {/* ── TOC pill row ──────────────────────────────────────────────────── */}
-      {hasData && (
-        <CoachToc
-          onPressCoach={() => scrollViewRef.current?.scrollTo({ y: 0, animated: true })}
-          onPressAnalisi={() => scrollViewRef.current?.scrollTo({ y: analysisSectionY.current, animated: true })}
-        />
-      )}
+      {/* ── Tab Analisi ───────────────────────────────────────────────────── */}
+      {hasData && activeView === 'analisi' && (
+        <SectionErrorBoundary label="Analisi dettagliata non disponibile">
+          <>
+            <HistoryChartsSection snapshots={history} />
 
-      {/* ── Sezione 2: Analisi dettagliata ───────────────────────────────── */}
-      {hasData && (
-        <View
-          style={{ gap: 20 }}
-          onLayout={(e) => { analysisSectionY.current = e.nativeEvent.layout.y; }}
-        >
-          <SectionErrorBoundary label="Analisi dettagliata non disponibile">
-            <>
-              <HistoryChartsSection snapshots={history} />
+            {visibleCategories.length > 0 && (
+              <PageSection title="Per categoria" subtitle="Tocca una categoria per il dettaglio">
+                <View style={s.catList}>
+                  {visibleCategories.map((ca) => (
+                    <CategoryRow
+                      key={ca.category}
+                      ca={ca}
+                      totalExpenses={analysis.totalExpenses}
+                      month={selectedMonth}
+                    />
+                  ))}
+                </View>
+              </PageSection>
+            )}
 
-              {/* Category analysis */}
-              {visibleCategories.length > 0 && (
-                <PageSection title="Analisi per categoria" subtitle="Tocca per vedere le spese dettagliate">
-                  <View style={s.catList}>
-                    {visibleCategories.map((ca) => (
-                      <CategoryCard
-                        key={ca.category}
-                        ca={ca}
-                        totalExpenses={analysis.totalExpenses}
-                      />
-                    ))}
-                  </View>
-                </PageSection>
-              )}
-            </>
-          </SectionErrorBoundary>
-        </View>
+            {/* Report CTA */}
+            <TouchableOpacity
+              style={s.reportBtn}
+              activeOpacity={0.8}
+              onPress={() => router.push(`/monthly-report?month=${selectedMonth}` as any)}
+            >
+              <Ionicons name="bar-chart-outline" size={15} color={Colors.accent.primary} />
+              <Text style={s.reportBtnText}>Vedi report completo del mese</Text>
+              <Ionicons name="chevron-forward" size={14} color={Colors.text.muted} />
+            </TouchableOpacity>
+          </>
+        </SectionErrorBoundary>
       )}
     </Page>
   );
@@ -1048,22 +1106,32 @@ export default function CoachScreen() {
 // ── Styles ────────────────────────────────────────────────────────────────────
 
 const s = StyleSheet.create({
-  // TOC pill row
-  toc: { gap: 10 },
-  tocDivider: { height: 1, backgroundColor: Colors.border.default },
-  tocPillRow: { flexDirection: 'row', justifyContent: 'center', gap: 10 },
-  tocPill: {
-    flexDirection: 'row', alignItems: 'center', gap: 6,
-    paddingHorizontal: 14, paddingVertical: 8,
-    borderRadius: Radius.full,
-    backgroundColor: Colors.accent.glow,
-    borderWidth: 1, borderColor: Colors.border.accent,
-  },
-  tocPillSecondary: {
+  // View tab switcher
+  viewTabRow: {
+    flexDirection: 'row',
     backgroundColor: Colors.bg.card,
+    borderRadius: Radius.lg,
+    borderWidth: 1,
     borderColor: Colors.border.default,
+    padding: 3,
+    gap: 3,
   },
-  tocPillLabel: { ...Typography.caption, color: Colors.accent.primary, fontWeight: '600' },
+  viewTabBtn: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    gap: 6, paddingVertical: 9, borderRadius: Radius.md,
+  },
+  viewTabBtnActive: { backgroundColor: Colors.accent.primary },
+  viewTabLabel: { ...Typography.caption, color: Colors.text.secondary, fontWeight: '600' },
+  viewTabLabelActive: { color: '#fff' },
+
+  // Report CTA
+  reportBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    paddingVertical: 10, paddingHorizontal: 14,
+    backgroundColor: Colors.accent.primary + '12',
+    borderRadius: Radius.md, borderWidth: 1, borderColor: Colors.accent.primary + '30',
+  },
+  reportBtnText: { ...Typography.caption, color: Colors.accent.primary, fontWeight: '600', flex: 1 },
 
   // AI chip
   aiChip: {
