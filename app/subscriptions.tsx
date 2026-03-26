@@ -27,6 +27,151 @@ export function toMonthly(s: Subscription): number {
   return s.amount / 12;
 }
 
+// ── Analytics helpers ──────────────────────────────────────────────────────────
+
+function daysUntil(dateStr: string): number {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const due = new Date(dateStr);
+  due.setHours(0, 0, 0, 0);
+  return Math.round((due.getTime() - today.getTime()) / 86400000);
+}
+
+function dueDateLabel(days: number): { text: string; color: string } {
+  if (days < 0) return { text: 'Scaduto', color: Colors.semantic.danger };
+  if (days === 0) return { text: 'Oggi', color: Colors.semantic.danger };
+  if (days === 1) return { text: 'Domani', color: Colors.semantic.warning };
+  if (days <= 7) return { text: `${days} giorni`, color: Colors.semantic.warning };
+  return { text: `${days} giorni`, color: Colors.text.muted };
+}
+
+// ── Summary card ───────────────────────────────────────────────────────────────
+
+function SubscriptionSummary({ subscriptions }: { subscriptions: Subscription[] }) {
+  const active = subscriptions.filter((s) => s.active);
+  const paused = subscriptions.filter((s) => !s.active);
+  const monthlyTotal = active.reduce((s, sub) => s + toMonthly(sub), 0);
+  const annualTotal = monthlyTotal * 12;
+  const dailyCost = monthlyTotal / 30;
+
+  if (subscriptions.length === 0) return null;
+
+  return (
+    <View style={as.summaryCard}>
+      <View style={as.summaryTop}>
+        <View style={as.summaryMain}>
+          <Text style={as.summaryLabel}>Costo mensile</Text>
+          <Text style={as.summaryAmount}>€{monthlyTotal.toFixed(2)}</Text>
+          <Text style={as.summaryAnnual}>€{annualTotal.toFixed(0)} / anno · €{dailyCost.toFixed(2)} / giorno</Text>
+        </View>
+        <View style={as.summaryStats}>
+          <View style={as.statPill}>
+            <Text style={as.statPillNum}>{active.length}</Text>
+            <Text style={as.statPillLabel}>Attivi</Text>
+          </View>
+          {paused.length > 0 && (
+            <View style={[as.statPill, as.statPillPaused]}>
+              <Text style={[as.statPillNum, { color: Colors.text.muted }]}>{paused.length}</Text>
+              <Text style={as.statPillLabel}>In pausa</Text>
+            </View>
+          )}
+        </View>
+      </View>
+    </View>
+  );
+}
+
+// ── Upcoming payments ──────────────────────────────────────────────────────────
+
+function UpcomingPayments({ subscriptions }: { subscriptions: Subscription[] }) {
+  const upcoming = subscriptions
+    .filter((s) => s.active)
+    .map((s) => ({ ...s, days: daysUntil(s.nextDueDate) }))
+    .filter((s) => s.days <= 30)
+    .sort((a, b) => a.days - b.days);
+
+  if (upcoming.length === 0) return null;
+
+  return (
+    <View style={as.section}>
+      <Text style={as.sectionTitle}>Prossimi 30 giorni</Text>
+      <View style={as.upcomingList}>
+        {upcoming.map((sub, idx) => {
+          const { text, color } = dueDateLabel(sub.days);
+          return (
+            <View
+              key={sub.id}
+              style={[as.upcomingRow, idx === upcoming.length - 1 && as.upcomingRowLast]}
+            >
+              <View style={[as.upcomingDot, { backgroundColor: sub.color }]}>
+                <Text style={as.upcomingEmoji}>{sub.emoji || '📱'}</Text>
+              </View>
+              <View style={as.upcomingInfo}>
+                <Text style={as.upcomingName} numberOfLines={1}>{sub.name}</Text>
+                <Text style={as.upcomingDate}>
+                  {new Date(sub.nextDueDate).toLocaleDateString('it-IT', { day: 'numeric', month: 'short' })}
+                </Text>
+              </View>
+              <View style={as.upcomingRight}>
+                <Text style={[as.upcomingDays, { color }]}>{text}</Text>
+                <Text style={as.upcomingAmount}>€{sub.amount}</Text>
+              </View>
+            </View>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
+
+// ── Category breakdown ─────────────────────────────────────────────────────────
+
+function SubCategoryBreakdown({ subscriptions }: { subscriptions: Subscription[] }) {
+  const active = subscriptions.filter((s) => s.active);
+  if (active.length === 0) return null;
+
+  const total = active.reduce((s, sub) => s + toMonthly(sub), 0);
+  if (total === 0) return null;
+
+  const byCategory = new Map<CategoryId, number>();
+  for (const sub of active) {
+    byCategory.set(sub.category, (byCategory.get(sub.category) ?? 0) + toMonthly(sub));
+  }
+  const sorted = Array.from(byCategory.entries())
+    .sort((a, b) => b[1] - a[1]);
+  const maxAmt = sorted[0]?.[1] ?? 1;
+
+  return (
+    <View style={as.section}>
+      <Text style={as.sectionTitle}>Per categoria</Text>
+      <View style={as.catList}>
+        {sorted.map(([catId, amt]) => {
+          const cat = CATEGORIES[catId];
+          const pct = (amt / total) * 100;
+          const barW = (amt / maxAmt) * 100;
+          return (
+            <View key={catId} style={as.catRow}>
+              <View style={[as.catIcon, { backgroundColor: cat?.bgColor ?? Colors.bg.elevated }]}>
+                <Ionicons name={(cat?.icon ?? 'help-circle') as any} size={13} color={cat?.color ?? Colors.text.muted} />
+              </View>
+              <View style={as.catBody}>
+                <View style={as.catLabelRow}>
+                  <Text style={as.catLabel} numberOfLines={1}>{cat?.label ?? catId}</Text>
+                  <Text style={as.catPct}>{pct.toFixed(0)}%</Text>
+                </View>
+                <View style={as.catTrack}>
+                  <View style={[as.catFill, { width: `${Math.round(barW)}%` as any, backgroundColor: cat?.color ?? Colors.accent.primary }]} />
+                </View>
+              </View>
+              <Text style={as.catAmt}>€{amt.toFixed(0)}/m</Text>
+            </View>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
+
 const FREQ_LABELS: Record<SubscriptionFrequency, string> = {
   monthly: 'Mensile',
   quarterly: 'Trimestrale',
@@ -151,18 +296,22 @@ export default function SubscriptionsScreen() {
         </TouchableOpacity>
       </View>
 
-      {/* Monthly total */}
-      <View style={styles.totalBanner}>
-        <Text style={styles.totalLabel}>Impatto mensile totale</Text>
-        <Text style={styles.totalAmount}>€{totalMonthly.toFixed(2)}</Text>
-      </View>
-
       <ScrollView
         style={styles.scroll}
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
       >
+        {/* Analytics */}
+        {!showAdd && subscriptions.length > 0 && (
+          <>
+            <SubscriptionSummary subscriptions={subscriptions} />
+            <UpcomingPayments subscriptions={subscriptions} />
+            <SubCategoryBreakdown subscriptions={subscriptions} />
+            {subscriptions.length > 0 && <Text style={styles.listSectionTitle}>Tutti gli abbonamenti</Text>}
+          </>
+        )}
+
         {/* Inline form */}
         {showAdd && (
           <View style={styles.formCard}>
@@ -286,17 +435,32 @@ export default function SubscriptionsScreen() {
           subscriptions.map((sub) => {
             const cat = CATEGORIES[sub.category];
             const monthly = toMonthly(sub);
+            const days = daysUntil(sub.nextDueDate);
+            const { text: daysText, color: daysColor } = dueDateLabel(days);
+            const isUrgent = sub.active && days <= 7;
             return (
-              <View key={sub.id} style={[styles.subCard, !sub.active && styles.subCardInactive]}>
+              <View
+                key={sub.id}
+                style={[
+                  styles.subCard,
+                  !sub.active && styles.subCardInactive,
+                  isUrgent && { borderColor: daysColor + '55' },
+                ]}
+              >
                 <View style={styles.subLeft}>
                   <View style={[styles.subDot, { backgroundColor: sub.color }]}>
                     <Text style={styles.subEmoji}>{sub.emoji || cat.label.charAt(0)}</Text>
                   </View>
                   <View style={styles.subInfo}>
                     <Text style={styles.subName}>{sub.name}</Text>
-                    <Text style={styles.subMeta}>
-                      €{sub.amount} · {FREQ_LABELS[sub.frequency]} · {sub.nextDueDate}
-                    </Text>
+                    <View style={styles.subMetaRow}>
+                      <Text style={styles.subMeta}>
+                        €{sub.amount} · {FREQ_LABELS[sub.frequency]}
+                      </Text>
+                      {sub.active && (
+                        <Text style={[styles.subDueChip, { color: daysColor }]}>{daysText}</Text>
+                      )}
+                    </View>
                   </View>
                 </View>
                 <View style={styles.subRight}>
@@ -361,20 +525,9 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-  totalBanner: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-    backgroundColor: Colors.bg.card,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border.default,
-  },
-  totalLabel: { ...Typography.caption, color: Colors.text.secondary, fontWeight: '600' },
-  totalAmount: { ...Typography.h3, color: Colors.text.primary },
   scroll: { flex: 1 },
   content: { padding: 16, gap: 12 },
+  listSectionTitle: { ...Typography.bodyMedium, color: Colors.text.primary, fontWeight: '700', marginTop: 4 },
 
   // Form
   formCard: {
@@ -501,7 +654,9 @@ const styles = StyleSheet.create({
   subEmoji: { fontSize: 18 },
   subInfo: { flex: 1 },
   subName: { ...Typography.bodyMedium, color: Colors.text.primary, fontWeight: '600' },
-  subMeta: { ...Typography.caption, color: Colors.text.muted, marginTop: 2 },
+  subMetaRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 2 },
+  subMeta: { ...Typography.caption, color: Colors.text.muted },
+  subDueChip: { ...Typography.micro, fontWeight: '700' },
   subRight: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   subMonthly: { ...Typography.caption, color: Colors.accent.primary, fontWeight: '700' },
   actionBtn: {
@@ -512,4 +667,84 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
+});
+
+// Analytics styles
+const as = StyleSheet.create({
+  // Summary card
+  summaryCard: {
+    backgroundColor: Colors.bg.card,
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+    borderColor: Colors.border.default,
+    padding: 16,
+  },
+  summaryTop: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between' },
+  summaryMain: { gap: 4 },
+  summaryLabel: { ...Typography.micro, color: Colors.text.muted, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.6 },
+  summaryAmount: { fontSize: 32, fontWeight: '800', color: Colors.text.primary, letterSpacing: -1 },
+  summaryAnnual: { ...Typography.caption, color: Colors.text.muted },
+  summaryStats: { flexDirection: 'row', gap: 8 },
+  statPill: {
+    alignItems: 'center',
+    backgroundColor: Colors.semantic.success + '18',
+    borderRadius: Radius.md,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    gap: 2,
+  },
+  statPillPaused: { backgroundColor: Colors.bg.elevated },
+  statPillNum: { ...Typography.bodyMedium, color: Colors.semantic.success, fontWeight: '800' },
+  statPillLabel: { ...Typography.micro, color: Colors.text.muted },
+
+  // Section
+  section: { gap: 10 },
+  sectionTitle: { ...Typography.bodyMedium, color: Colors.text.primary, fontWeight: '700' },
+
+  // Upcoming
+  upcomingList: {
+    backgroundColor: Colors.bg.card,
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+    borderColor: Colors.border.default,
+    overflow: 'hidden',
+  },
+  upcomingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border.subtle,
+  },
+  upcomingRowLast: { borderBottomWidth: 0 },
+  upcomingDot: { width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center' },
+  upcomingEmoji: { fontSize: 16 },
+  upcomingInfo: { flex: 1, gap: 2 },
+  upcomingName: { ...Typography.caption, color: Colors.text.primary, fontWeight: '600' },
+  upcomingDate: { ...Typography.micro, color: Colors.text.muted },
+  upcomingRight: { alignItems: 'flex-end', gap: 2 },
+  upcomingDays: { ...Typography.micro, fontWeight: '700' },
+  upcomingAmount: { ...Typography.caption, color: Colors.text.primary, fontWeight: '700' },
+
+  // Category breakdown
+  catList: {
+    backgroundColor: Colors.bg.card,
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+    borderColor: Colors.border.default,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    gap: 12,
+  },
+  catRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  catIcon: { width: 28, height: 28, borderRadius: 8, alignItems: 'center', justifyContent: 'center' },
+  catBody: { flex: 1, gap: 5 },
+  catLabelRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  catLabel: { ...Typography.caption, color: Colors.text.primary, fontWeight: '500' },
+  catPct: { ...Typography.micro, color: Colors.text.muted },
+  catTrack: { height: 5, backgroundColor: Colors.bg.elevated, borderRadius: 3, overflow: 'hidden' },
+  catFill: { height: 5, borderRadius: 3 },
+  catAmt: { ...Typography.caption, color: Colors.text.secondary, fontWeight: '600', minWidth: 56, textAlign: 'right' },
 });
