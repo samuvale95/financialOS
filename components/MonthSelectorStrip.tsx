@@ -1,5 +1,7 @@
 import React, { useRef, useEffect } from 'react';
-import { ScrollView, Text, TouchableOpacity, StyleSheet } from 'react-native';
+import { ScrollView, View, Text, TouchableOpacity, StyleSheet } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
+import { router } from 'expo-router';
 import { Colors, Typography, Radius } from '../constants/theme';
 import { useAnalysis } from '../contexts/AnalysisContext';
 
@@ -19,7 +21,6 @@ export default function MonthSelectorStrip() {
   useEffect(() => {
     const idx = availableMonths.indexOf(selectedMonth);
     if (idx < 0 || !scrollRef.current) return;
-    // Scroll so the pill is roughly centred; clamp at 0
     const x = Math.max(0, idx * PILL_W - 40);
     scrollRef.current.scrollTo({ x, animated: true });
   }, [selectedMonth, availableMonths]);
@@ -27,35 +28,51 @@ export default function MonthSelectorStrip() {
   if (availableMonths.length <= 1) return null;
 
   return (
-    <ScrollView
-      ref={scrollRef}
-      horizontal
-      showsHorizontalScrollIndicator={false}
-      style={s.scroll}
-      contentContainerStyle={s.strip}
-    >
-      {availableMonths.map((month) => {
-        const active = month === selectedMonth;
-        return (
-          <TouchableOpacity
-            key={month}
-            style={[s.pill, active && s.pillActive]}
-            onPress={() => setSelectedMonth(month)}
-            activeOpacity={0.7}
-          >
-            <Text style={[s.pillText, active && s.pillTextActive]}>
-              {formatPill(month)}
-            </Text>
-          </TouchableOpacity>
-        );
-      })}
-    </ScrollView>
+    <View style={s.wrapper}>
+      <ScrollView
+        ref={scrollRef}
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        style={s.scroll}
+        contentContainerStyle={s.strip}
+      >
+        {availableMonths.map((month) => {
+          const active = month === selectedMonth;
+          return (
+            <TouchableOpacity
+              key={month}
+              style={[s.pill, active && s.pillActive]}
+              onPress={() => setSelectedMonth(month)}
+              activeOpacity={0.7}
+            >
+              <Text style={[s.pillText, active && s.pillTextActive]}>
+                {formatPill(month)}
+              </Text>
+            </TouchableOpacity>
+          );
+        })}
+      </ScrollView>
+
+      {/* Report button for selected month */}
+      <TouchableOpacity
+        style={s.reportBtn}
+        activeOpacity={0.7}
+        onPress={() => router.push(`/monthly-report?month=${selectedMonth}` as any)}
+      >
+        <Ionicons name="bar-chart-outline" size={16} color={Colors.accent.primary} />
+      </TouchableOpacity>
+    </View>
   );
 }
 
 const s = StyleSheet.create({
+  wrapper: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
   scroll: {
-    flexGrow: 0,
+    flexGrow: 1,
+    flexShrink: 1,
   },
   strip: {
     paddingHorizontal: 16,
@@ -86,5 +103,16 @@ const s = StyleSheet.create({
   },
   pillTextActive: {
     color: Colors.accent.primary,
+  },
+  reportBtn: {
+    width: 36,
+    height: 36,
+    marginRight: 12,
+    borderRadius: 10,
+    backgroundColor: Colors.accent.primary + '12',
+    borderWidth: 1,
+    borderColor: Colors.accent.primary + '30',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
 });

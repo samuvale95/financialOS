@@ -23,6 +23,8 @@ import HouseGoalWidget from '../../components/dashboard/HouseGoalWidget';
 import RetirementWidget from '../../components/dashboard/RetirementWidget';
 import MonthProjectionCard from '../../components/dashboard/MonthProjectionCard';
 import BudgetReconciliationBanner from '../../components/BudgetReconciliationBanner';
+import { CashFlowHistoryCard } from '../../components/dashboard/CashFlowHistoryCard';
+import { analyzeHistory } from '../../utils/spendingAnalyzer';
 import { useData } from '../../contexts/DataContext';
 import { useSettings } from '../../contexts/SettingsContext';
 import { loadOnboardingData, saveOnboardingData } from '../../utils/storage';
@@ -418,6 +420,7 @@ function OnboardingSummaryCard({
 
 export default function DashboardScreen() {
   const { transactions, budgets, goals, accounts, subscriptions, monthSummary, isLoading } = useData();
+  const history = useMemo(() => analyzeHistory(transactions, budgets, 6), [transactions, budgets]);
   const { settings } = useSettings();
   const [mainGoal, setMainGoal] = useState<OnboardingGoalId | null>(null);
   const [historicalBannerDismissed, setHistoricalBannerDismissed] = useState(false);
@@ -552,6 +555,7 @@ export default function DashboardScreen() {
           <>
             <QuickActionsRow budgets={budgets} />
             <HeroStack summary={monthSummary} goals={goals} />
+            <CashFlowHistoryCard snapshots={history} />
             {historicalMonthInfo && !historicalBannerDismissed && (
               <HistoricalMonthBanner
                 month={historicalMonthInfo}
