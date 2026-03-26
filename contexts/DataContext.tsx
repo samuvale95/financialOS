@@ -252,6 +252,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
             region: onboarding.userProfile?.region ?? null,
             dependents: onboarding.userProfile?.dependents,
             lifestyleProfile: onboarding.lifestyleProfile,
+            incomeStability: onboarding.workInfo?.stability,
           };
           effectiveBuds = calculateBudgets(
             income,

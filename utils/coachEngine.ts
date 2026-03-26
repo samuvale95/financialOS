@@ -2,7 +2,154 @@ import type { SpendingAnalysis, CategoryAnalysis } from './spendingAnalyzer';
 import type { InsightProfile, CategoryTrend } from './insightProfile';
 import type { FiscalProfile, Transaction } from '../types';
 import type { SpendingAnomaly } from './anomalyDetector';
+import type { CategoryId } from '../constants/categories';
 import { calculateEstimated730Refund, calculateForfettarioNetto } from './taxCalculator';
+import * as istatCache from './istatCache';
+import { getIncomeQuintile } from './budgetCalculator';
+
+// ── ISTAT benchmark helpers ───────────────────────────────────────────────────
+
+const ISTAT_NATIONAL_AVG_EUR = 2755; // 2024 reference — update with DATA_VERSION bumps
+
+const QUINTILE_LABELS: Record<1 | 2 | 3 | 4 | 5, string> = {
+  1: 'reddito basso (<€1.200/mese)',
+  2: 'reddito medio-basso (€1.200–1.900)',
+  3: 'reddito mediano (€1.900–2.700)',
+  4: 'reddito medio-alto (€2.700–3.800)',
+  5: 'reddito alto (>€3.800/mese)',
+};
+
+/**
+ * For each category, compute the ISTAT national average monthly spend adjusted
+ * for the user's income quintile. Returns a map of category → benchmark €.
+ * Categories with no COICOP weight or weight < 0.5% are excluded (too small).
+ */
+function buildIstatBenchmarks(monthlyIncome: number): Map<string, number> {
+  const benchmarks = new Map<string, number>();
+  if (!istatCache.isInitialized() || monthlyIncome <= 0) return benchmarks;
+
+  const quintile = getIncomeQuintile(monthlyIncome);
+  const quintileIndex = istatCache.getIncomeQuintileIndex(quintile);
+  const weights = istatCache.getWeights();
+
+  for (const [cat, weight] of Object.entries(weights)) {
+    if (!weight || weight < 0.5) continue;
+    const istatMonthly = (weight / 100) * ISTAT_NATIONAL_AVG_EUR * quintileIndex;
+    benchmarks.set(cat, istatMonthly);
+  }
+  return benchmarks;
+}
+
+/**
+ * Returns the ISTAT benchmark insight comparing user's top-spending categories
+ * to the national average for their income quintile.
+ * Shows at most 3 categories with the largest absolute deviation (≥25%).
+ */
+function istatBenchmarkInsight(
+  categories: CategoryAnalysis[],
+  monthlyIncome: number,
+): PersistentInsight | null {
+  if (!istatCache.isInitialized() || monthlyIncome <= 0) return null;
+
+  const benchmarks = buildIstatBenchmarks(monthlyIncome);
+  if (benchmarks.size === 0) return null;
+
+  const quintile = getIncomeQuintile(monthlyIncome);
+
+  type Outlier = { label: string; monthTotal: number; benchmark: number; pct: number };
+  const outliers: Outlier[] = [];
+
+  for (const ca of categories) {
+    if (ca.monthTotal <= 0) continue;
+    const benchmark = benchmarks.get(ca.category as string);
+    if (!benchmark || benchmark < 15) continue;
+    const pct = Math.round(((ca.monthTotal - benchmark) / benchmark) * 100);
+    if (Math.abs(pct) < 25) continue;
+    outliers.push({ label: ca.label, monthTotal: ca.monthTotal, benchmark, pct });
+  }
+
+  if (outliers.length === 0) return null;
+
+  const top = outliers.sort((a, b) => Math.abs(b.pct) - Math.abs(a.pct)).slice(0, 3);
+  const overCount = top.filter((o) => o.pct > 0).length;
+
+  const lines = top.map((o) => {
+    const arrow = o.pct > 0 ? '↑' : '↓';
+    const sign = o.pct > 0 ? '+' : '';
+    return `${o.label}: €${Math.round(o.monthTotal)} vs €${Math.round(o.benchmark)} media (${sign}${o.pct}%) ${arrow}`;
+  });
+
+  return {
+    id: 'istat_benchmark',
+    icon: 'stats-chart',
+    iconColor: overCount > 0 ? '#FFB347' : '#00D68F',
+    title: `Confronto media ISTAT – ${QUINTILE_LABELS[quintile]}`,
+    body: `Le tue spese vs media italiana nel tuo reddito:\n${lines.join('\n')}`,
+    trend: overCount > 0 ? 'negative' : 'positive',
+  };
+}
+
+/**
+ * Generates a coach question when a category is significantly above the ISTAT
+ * national benchmark for the user's income quintile (≥50% over, min €30 gap).
+ */
+function istatBenchmarkQuestion(
+  ca: CategoryAnalysis,
+  monthlyIncome: number,
+  month: string,
+): CoachQuestion | null {
+  if (!istatCache.isInitialized() || monthlyIncome <= 0 || ca.monthTotal <= 0) return null;
+
+  const benchmarks = buildIstatBenchmarks(monthlyIncome);
+  const benchmark = benchmarks.get(ca.category as string);
+  if (!benchmark || benchmark < 15) return null;
+
+  const pct = Math.round(((ca.monthTotal - benchmark) / benchmark) * 100);
+  const gap = Math.round(ca.monthTotal - benchmark);
+  if (pct < 50 || gap < 30) return null; // only flag meaningful overspends
+
+  const quintile = getIncomeQuintile(monthlyIncome);
+
+  return {
+    id: `q_istat_over_${ca.category}_${month}`,
+    category: ca.category as string,
+    priority: 58,
+    title: `${ca.label}: ${pct}% sopra la media italiana`,
+    body: `Spendi €${Math.round(ca.monthTotal)}/mese in ${ca.label.toLowerCase()}, contro una media ISTAT di €${Math.round(benchmark)} per il tuo ${QUINTILE_LABELS[quintile]}. È una scelta consapevole?`,
+    icon: 'analytics',
+    iconColor: '#FFB347',
+    options: [
+      {
+        label: 'Sì, è una priorità',
+        tag: 'istat_priority',
+        recommendation: {
+          type: 'positive',
+          title: 'Scelta consapevole',
+          body: `Se rientra nel budget mensile, va bene. Assicurati che questa categoria non stia comprimendo il tasso di risparmio sotto il target.`,
+        },
+      },
+      {
+        label: 'Non me n\'ero accorto',
+        tag: 'istat_unaware',
+        recommendation: {
+          type: 'action',
+          title: 'Rivedi le abitudini',
+          body: `La media italiana nella tua fascia spende €${Math.round(benchmark)}/mese in ${ca.label.toLowerCase()}. Portarti vicino a quel valore libererebbe circa €${gap}/mese (€${gap * 12}/anno).`,
+          potentialSaving: gap,
+        },
+      },
+      {
+        label: 'È un mese anomalo',
+        tag: 'istat_one_off',
+        recommendation: {
+          type: 'info',
+          title: 'Tieni d\'occhio il prossimo mese',
+          body: `Se è un caso isolato, non preoccuparti. Controlla il mese prossimo se la spesa rientra nella norma (€${Math.round(benchmark)}).`,
+        },
+      },
+    ],
+  };
+}
 
 export interface PersistentInsight {
   id: string;
@@ -181,6 +328,12 @@ export function generatePersistentInsights(
       body: `La tua media in ${label.toLowerCase()} è €${Math.round(ct.averageMonthly)}/mese e stai spendendo meno del solito.${currentNote} Mantieni il ritmo!`,
       trend: 'positive',
     });
+  }
+
+  // 6b. ISTAT benchmark comparison (income-quintile-aware national average)
+  if (monthIncome > 0) {
+    const benchmarkInsight = istatBenchmarkInsight(categories, monthIncome);
+    if (benchmarkInsight) insights.push(benchmarkInsight);
   }
 
   // 7. High-severity anomalies — surfaced as warning insights (cap at 3 to avoid clutter)
@@ -789,6 +942,10 @@ export function generateCoachQuestions(
       if (q && !isAnswered(q.id)) questions.push(q);
     }
 
+    // ISTAT benchmark overspend question (per-category, monthly-versioned)
+    const istatQ = istatBenchmarkQuestion(ca, analysis.monthIncome, month);
+    if (istatQ && !isAnswered(istatQ.id)) questions.push(istatQ);
+
     // ── Dining returning check ──────────────────────────────────────────────
     // If user previously committed to reducing dining but spending is high again,
     // surface a contextual returning question (monthly-versioned so it can resurface).
@@ -803,6 +960,55 @@ export function generateCoachQuestions(
   }
 
   return questions.sort((a, b) => b.priority - a.priority);
+}
+
+// ── Salary benchmark insight ──────────────────────────────────────────────────
+
+/**
+ * Returns a PersistentInsight comparing the user's monthly income to the ISTAT
+ * benchmark for their region and/or sector. Only shown when income > 0 and the
+ * cache is ready. Returns null if no meaningful comparison can be made.
+ */
+export function generateSalaryInsight(
+  monthlyIncome: number,
+  region?: string | null,
+  sector?: string | null,
+): PersistentInsight | null {
+  if (!istatCache.isInitialized() || monthlyIncome <= 0) return null;
+
+  const benchmark = istatCache.getSalaryBenchmark(region, sector);
+  if (!benchmark) return null;
+
+  const { median, p25, p75, label } = benchmark;
+  const diff = monthlyIncome - median;
+  const diffPct = Math.round((diff / median) * 100);
+  const absDiffPct = Math.abs(diffPct);
+
+  // Don't show if within ±10% of median (not interesting enough)
+  if (absDiffPct < 10) return null;
+
+  const isAbove = diff > 0;
+
+  // Determine quartile label
+  let quartileNote = '';
+  if (monthlyIncome < p25) {
+    quartileNote = `sotto il 25° percentile (€${p25.toLocaleString('it-IT')} la soglia)`;
+  } else if (monthlyIncome <= median) {
+    quartileNote = `tra il 25° e il 50° percentile`;
+  } else if (monthlyIncome <= p75) {
+    quartileNote = `tra il 50° e il 75° percentile`;
+  } else {
+    quartileNote = `sopra il 75° percentile (€${p75.toLocaleString('it-IT')} la soglia)`;
+  }
+
+  return {
+    id: 'salary_benchmark',
+    icon: 'people',
+    iconColor: isAbove ? '#00D68F' : '#FFB347',
+    title: `Il tuo stipendio vs media ${label}`,
+    body: `Con €${Math.round(monthlyIncome).toLocaleString('it-IT')}/mese netti sei ${isAbove ? '+' : ''}${diffPct}% rispetto alla mediana ISTAT di €${median.toLocaleString('it-IT')} (${label}). Sei ${quartileNote}.`,
+    trend: isAbove ? 'positive' : monthlyIncome < p25 ? 'negative' : 'neutral',
+  };
 }
 
 // ── Tax insights ──────────────────────────────────────────────────────────────

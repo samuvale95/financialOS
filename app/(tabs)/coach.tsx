@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useMemo, useRef, useState, useEffect } from 'react';
 import {
   View, Text, StyleSheet,
   TouchableOpacity, ScrollView,
@@ -12,13 +12,15 @@ import { Card, AccentCard } from '../../components/ui/Card';
 import { useData } from '../../contexts/DataContext';
 import { analyzeSpending, getBudgetForecast, analyzeHistory } from '../../utils/spendingAnalyzer';
 import type { BudgetForecast, MonthlySnapshot } from '../../utils/spendingAnalyzer';
-import { generateCoachQuestions, generatePersistentInsights, generateTaxInsights } from '../../utils/coachEngine';
+import { generateCoachQuestions, generatePersistentInsights, generateTaxInsights, generateSalaryInsight } from '../../utils/coachEngine';
 import type { PersistentInsight } from '../../utils/coachEngine';
 import { detectAnomalies } from '../../utils/anomalyDetector';
 import type { CategoryAnalysis } from '../../utils/spendingAnalyzer';
 import type { CoachQuestion, CoachRecommendation } from '../../utils/coachEngine';
 import { useSettings } from '../../contexts/SettingsContext';
 import { useAnalysis } from '../../contexts/AnalysisContext';
+import { loadOnboardingData } from '../../utils/storage';
+import type { OnboardingData } from '../../types';
 import { SectionErrorBoundary } from '../../components/SectionErrorBoundary';
 import MonthSelectorStrip from '../../components/MonthSelectorStrip';
 
@@ -723,6 +725,10 @@ function CoachToc({
 export default function CoachScreen() {
   const { transactions, budgets, insightProfile, answerQuestion, dismissQuestion } = useData();
   const { fiscalProfile } = useSettings();
+  const [onboarding, setOnboarding] = useState<OnboardingData | null>(null);
+  useEffect(() => {
+    loadOnboardingData().then(setOnboarding).catch(() => {});
+  }, []);
 
   const { selectedMonth, availableMonths } = useAnalysis();
 
@@ -744,8 +750,8 @@ export default function CoachScreen() {
   );
 
   const anomalies = useMemo(
-    () => detectAnomalies(currentMonthTx, insightProfile, budgets),
-    [currentMonthTx, insightProfile, budgets],
+    () => detectAnomalies(currentMonthTx, insightProfile, budgets, analysis.monthIncome),
+    [currentMonthTx, insightProfile, budgets, analysis.monthIncome],
   );
 
   const persistentInsights = useMemo(
@@ -756,6 +762,14 @@ export default function CoachScreen() {
     () => generateTaxInsights(fiscalProfile, transactions),
     [fiscalProfile, transactions],
   );
+  const salaryInsight = useMemo(() => {
+    if (!onboarding) return null;
+    return generateSalaryInsight(
+      analysis.monthIncome,
+      onboarding.userProfile?.region,
+      onboarding.workInfo?.sector,
+    );
+  }, [analysis.monthIncome, onboarding]);
   const history = useMemo(() => analyzeHistory(transactions, budgets, 6), [transactions, budgets]);
   const unclassifiedCount = useMemo(
     () => currentMonthTx.filter((t) => t.category === 'other' && t.amount < 0).length,
@@ -909,7 +923,7 @@ export default function CoachScreen() {
 
             <UnclassifiedCard count={unclassifiedCount} />
             <BudgetForecastCard forecasts={budgetForecasts} />
-            <PersistentInsightsPanel insights={[...persistentInsights, ...taxInsights]} />
+            <PersistentInsightsPanel insights={[...persistentInsights, ...taxInsights, ...(salaryInsight ? [salaryInsight] : [])]} />
 
             {/* Summary stats bar */}
             <Card padding={12} style={{ flexDirection: 'row', justifyContent: 'space-around' }}>

@@ -202,3 +202,18 @@ export interface OnboardingData {
   workInfo?: WorkInfo;
   lifestyleProfile?: LifestyleProfile;
 }
+
+// ── Auth ─────────────────────────────────────────────────────────────────────
+
+export type AuthMethod = 'pin';
+export type AutoLockDelay = 0 | 60 | 300 | 900; // seconds
+
+export interface AuthConfig {
+  enabled: boolean;
+  method: AuthMethod;
+  biometricEnabled: boolean;
+  autoLockDelay: AutoLockDelay;
+  credentialHash: string | null;
+  salt: string | null;
+  pinLength: 4 | 6;
+}

@@ -18,30 +18,6 @@ import { CATEGORIES } from '../../constants/categories';
 import type { Transaction } from '../../types';
 import type { CategoryId } from '../../constants/categories';
 import { Button } from '../../components/ui/Button';
-import CategoryTrendSparkline from '../../components/spese/CategoryTrendSparkline';
-import type { MonthlyTrend } from '../../components/spese/CategoryTrendSparkline';
-
-// ── Trend helpers ─────────────────────────────────────────────────────────────
-
-function buildCategoryTrend(
-  transactions: Transaction[],
-  category: string,
-  selectedMonth: string,
-  months = 6,
-): MonthlyTrend[] {
-  const [sy, sm] = selectedMonth.split('-').map(Number);
-  const result: MonthlyTrend[] = [];
-  for (let i = months - 1; i >= 0; i--) {
-    const d = new Date(sy, sm - 1 - i, 1);
-    const monthKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-    const amount = transactions
-      .filter((t) => t.date.startsWith(monthKey) && t.category === category && t.amount < 0)
-      .reduce((sum, t) => sum + Math.abs(t.amount), 0);
-    result.push({ month: monthKey, amount: Math.round(amount) });
-  }
-  return result;
-}
-
 
 function groupByDate(transactions: Transaction[]): Record<string, Transaction[]> {
   return transactions.reduce<Record<string, Transaction[]>>((acc, t) => {
@@ -117,13 +93,13 @@ function DataQualityBar({
 
 // ── Category Breakdown component ──────────────────────────────────────────────
 
-function CategoryBreakdown({ transactions, selectedMonth, allTransactions }: {
+function CategoryBreakdown({ transactions, selectedMonth }: {
   transactions: Transaction[];
   selectedMonth: string;
   allTransactions: Transaction[];
 }) {
   const monthExpenses = transactions.filter(
-    (t) => t.amount < 0 && t.date.startsWith(selectedMonth)
+    (t) => t.amount < 0 && t.date.startsWith(selectedMonth) && t.category !== 'transfer'
   );
   const totalOut = monthExpenses.reduce((s, t) => s + Math.abs(t.amount), 0);
 
@@ -148,62 +124,85 @@ function CategoryBreakdown({ transactions, selectedMonth, allTransactions }: {
     );
   }
 
+  const maxTotal = byCategory[0]?.total ?? 1;
+
   return (
     <View style={cb.container}>
-      {/* Totale header */}
-      <View style={cb.totalCard}>
-        <Text style={cb.totalLabel}>Totale uscite questo mese</Text>
-        <Text style={cb.totalAmount}>€{totalOut.toFixed(0)}</Text>
-        <Text style={cb.totalSub}>{byCategory.length} categorie attive</Text>
+      {/* Summary header */}
+      <View style={cb.summaryRow}>
+        <View style={cb.summaryItem}>
+          <Text style={cb.summaryValue}>€{Math.round(totalOut).toLocaleString('it-IT')}</Text>
+          <Text style={cb.summaryLabel}>Totale uscite</Text>
+        </View>
+        <View style={cb.summaryDivider} />
+        <View style={cb.summaryItem}>
+          <Text style={cb.summaryValue}>{byCategory.length}</Text>
+          <Text style={cb.summaryLabel}>Categorie</Text>
+        </View>
+        <View style={cb.summaryDivider} />
+        <View style={cb.summaryItem}>
+          <Text style={cb.summaryValue}>{monthExpenses.length}</Text>
+          <Text style={cb.summaryLabel}>Transazioni</Text>
+        </View>
       </View>
 
-      {/* Category rows */}
+      {/* Category bar chart */}
       <View style={cb.list}>
-        {byCategory.map(({ cat, total, count }) => {
+        {byCategory.map(({ cat, total, count }, idx) => {
           const catInfo = CATEGORIES[cat];
           const pct = totalOut > 0 ? (total / totalOut) * 100 : 0;
-          const trend = buildCategoryTrend(allTransactions, cat, selectedMonth);
+          const barWidth = maxTotal > 0 ? (total / maxTotal) * 100 : 0;
           return (
-            <View key={cat} style={cb.row}>
-              {/* Main horizontal row */}
-              <View style={cb.rowMain}>
-                <View style={[cb.icon, { backgroundColor: catInfo?.bgColor ?? Colors.bg.elevated }]}>
-                  <Ionicons
-                    name={(catInfo?.icon ?? 'help-circle') as any}
-                    size={16}
-                    color={catInfo?.color ?? Colors.text.muted}
+            <TouchableOpacity
+              key={cat}
+              style={[cb.row, idx === byCategory.length - 1 && cb.rowLast]}
+              activeOpacity={0.7}
+              onPress={() => router.push(`/category/${cat}?month=${selectedMonth}` as any)}
+            >
+              <View style={[cb.icon, { backgroundColor: catInfo?.bgColor ?? Colors.bg.elevated }]}>
+                <Ionicons
+                  name={(catInfo?.icon ?? 'help-circle') as any}
+                  size={15}
+                  color={catInfo?.color ?? Colors.text.muted}
+                />
+              </View>
+              <View style={cb.info}>
+                <View style={cb.infoTop}>
+                  <Text style={cb.catLabel} numberOfLines={1}>{catInfo?.label ?? cat}</Text>
+                  <Text style={cb.pctLabel}>{pct.toFixed(0)}%</Text>
+                </View>
+                <View style={cb.barTrack}>
+                  <View
+                    style={[
+                      cb.barFill,
+                      {
+                        width: `${Math.round(barWidth)}%` as any,
+                        backgroundColor: catInfo?.color ?? Colors.accent.primary,
+                      },
+                    ]}
                   />
                 </View>
-                <View style={cb.info}>
-                  <View style={cb.infoTop}>
-                    <Text style={cb.catLabel} numberOfLines={1}>
-                      {catInfo?.label ?? cat}
-                    </Text>
-                    <Text style={cb.catAmount}>€{total.toFixed(0)}</Text>
-                  </View>
-                  <View style={cb.barRow}>
-                    <View style={cb.barBg}>
-                      <View
-                        style={[
-                          cb.barFill,
-                          {
-                            width: `${Math.min(100, pct)}%` as any,
-                            backgroundColor: catInfo?.color ?? Colors.accent.primary,
-                          },
-                        ]}
-                      />
-                    </View>
-                    <Text style={cb.txCount}>{count} tx</Text>
-                  </View>
+                <View style={cb.infoBottom}>
+                  <Text style={cb.txCount}>{count} transazioni</Text>
+                  <Text style={cb.catAmount}>€{Math.round(total).toLocaleString('it-IT')}</Text>
                 </View>
               </View>
-
-              {/* 6-month trend sparkline */}
-              <CategoryTrendSparkline trend={trend} accentColor={catInfo?.color} />
-            </View>
+              <Ionicons name="chevron-forward" size={13} color={Colors.text.muted} />
+            </TouchableOpacity>
           );
         })}
       </View>
+
+      {/* Report CTA */}
+      <TouchableOpacity
+        style={cb.reportBtn}
+        activeOpacity={0.8}
+        onPress={() => router.push(`/monthly-report?month=${selectedMonth}` as any)}
+      >
+        <Ionicons name="bar-chart-outline" size={15} color={Colors.accent.primary} />
+        <Text style={cb.reportBtnText}>Vedi report completo del mese</Text>
+        <Ionicons name="chevron-forward" size={14} color={Colors.text.muted} />
+      </TouchableOpacity>
     </View>
   );
 }
@@ -757,18 +756,22 @@ const cb = StyleSheet.create({
   container: { gap: 12 },
   empty: { alignItems: 'center', gap: 12, paddingVertical: 40 },
   emptyText: { ...Typography.body, color: Colors.text.muted },
-  totalCard: {
+
+  // Summary row
+  summaryRow: {
+    flexDirection: 'row',
     backgroundColor: Colors.bg.card,
     borderRadius: Radius.lg,
     borderWidth: 1,
     borderColor: Colors.border.default,
-    padding: 16,
-    alignItems: 'center',
-    gap: 4,
+    padding: 14,
   },
-  totalLabel: { ...Typography.caption, color: Colors.text.secondary },
-  totalAmount: { ...Typography.h1, color: Colors.semantic.danger, fontWeight: '800' },
-  totalSub: { ...Typography.micro, color: Colors.text.muted },
+  summaryItem: { flex: 1, alignItems: 'center', gap: 4 },
+  summaryValue: { ...Typography.bodyMedium, color: Colors.text.primary, fontWeight: '700' },
+  summaryLabel: { ...Typography.micro, color: Colors.text.muted },
+  summaryDivider: { width: 1, backgroundColor: Colors.border.default },
+
+  // Bar chart list
   list: {
     backgroundColor: Colors.bg.card,
     borderRadius: Radius.lg,
@@ -777,30 +780,48 @@ const cb = StyleSheet.create({
     overflow: 'hidden',
   },
   row: {
+    flexDirection: 'row',
+    alignItems: 'center',
     paddingHorizontal: 14,
-    paddingVertical: 12,
+    paddingVertical: 11,
     borderBottomWidth: 1,
     borderBottomColor: Colors.border.subtle,
     gap: 10,
   },
-  rowMain: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-  },
+  rowLast: { borderBottomWidth: 0 },
   icon: {
-    width: 32,
-    height: 32,
+    width: 30,
+    height: 30,
     borderRadius: 8,
     justifyContent: 'center',
     alignItems: 'center',
   },
-  info: { flex: 1, gap: 6 },
+  info: { flex: 1, gap: 5 },
   infoTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   catLabel: { ...Typography.caption, color: Colors.text.primary, fontWeight: '600', flex: 1 },
+  pctLabel: { ...Typography.micro, color: Colors.text.muted, fontWeight: '600' },
+  barTrack: { height: 5, backgroundColor: Colors.bg.elevated, borderRadius: 3, overflow: 'hidden' },
+  barFill: { height: 5, borderRadius: 3 },
+  infoBottom: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  txCount: { ...Typography.micro, color: Colors.text.muted },
   catAmount: { ...Typography.caption, color: Colors.text.primary, fontWeight: '700' },
-  barRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  barBg: { flex: 1, height: 4, backgroundColor: Colors.border.default, borderRadius: 2, overflow: 'hidden' },
-  barFill: { height: 4, borderRadius: 2 },
-  txCount: { ...Typography.micro, color: Colors.text.muted, width: 30, textAlign: 'right' },
+
+  // Report CTA
+  reportBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    backgroundColor: Colors.accent.primary + '12',
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: Colors.accent.primary + '30',
+  },
+  reportBtnText: {
+    ...Typography.caption,
+    color: Colors.accent.primary,
+    fontWeight: '600',
+    flex: 1,
+  },
 });

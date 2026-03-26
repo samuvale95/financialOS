@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   View,
   Text,
@@ -16,10 +16,13 @@ import { Colors, Typography, Radius, Spacing, Touch } from '../constants/theme';
 import { useSettings } from '../contexts/SettingsContext';
 import { hasGemini } from '../utils/geminiParser';
 import { useData } from '../contexts/DataContext';
+import { useAuth } from '../contexts/AuthContext';
 import { clearParserCache, getCacheStats } from '../utils/aiParserCache';
 import { ITALIAN_BANKS } from '../constants/italianBanks';
 import type { ItalianBank } from '../constants/italianBanks';
-import type { BankAccount, FiscalType } from '../types';
+import type { AutoLockDelay, BankAccount, FiscalType, OnboardingData } from '../types';
+import * as istatCache from '../utils/istatCache';
+import { loadOnboardingData } from '../utils/storage';
 
 // ── Shared ──────────────────────────────────────────────────────────────────
 
@@ -291,6 +294,110 @@ function AccountRow({ account, onUpdate, onDelete }: AccountRowProps) {
   );
 }
 
+// ── SalaryBenchmarkSection ────────────────────────────────────────────────────
+
+function SalaryBenchmarkSection() {
+  const [onboarding, setOnboarding] = useState<OnboardingData | null>(null);
+
+  useEffect(() => {
+    loadOnboardingData().then(setOnboarding).catch(() => {});
+  }, []);
+
+  const benchmark = useMemo(() => {
+    if (!istatCache.isInitialized()) return null;
+    return istatCache.getSalaryBenchmark(
+      onboarding?.userProfile?.region,
+      onboarding?.workInfo?.sector,
+    );
+  }, [onboarding]);
+
+  const income = onboarding?.monthlyIncome ?? 0;
+
+  // Bar: position of user income relative to P25..P75 range
+  const barPosition = useMemo(() => {
+    if (!benchmark || income <= 0) return null;
+    const { p25, p75, median } = benchmark;
+    const rangeMin = p25 * 0.7; // extend a bit beyond p25 for visual
+    const rangeMax = p75 * 1.3;
+    const clamp = (v: number) => Math.min(Math.max(v, 0), 1);
+    const pos = (v: number) => clamp((v - rangeMin) / (rangeMax - rangeMin));
+    return {
+      p25Pct: pos(p25),
+      medianPct: pos(median),
+      p75Pct: pos(p75),
+      userPct: pos(income),
+    };
+  }, [benchmark, income]);
+
+  const region = onboarding?.userProfile?.region;
+  const sector = onboarding?.workInfo?.sector;
+  const hasProfile = !!(region || sector);
+
+  return (
+    <View style={styles.section}>
+      <Text style={styles.sectionTitle}>BENCHMARK STIPENDIO</Text>
+      <View style={styles.card}>
+        {/* Context line */}
+        <Text style={[styles.rowDesc, { marginBottom: 12 }]}>
+          {hasProfile
+            ? `Confronto ISTAT ${[region, sector].filter(Boolean).join(' · ')} — dati ${new Date().getFullYear()}`
+            : 'Dati nazionali ISTAT 2024. Imposta la tua regione e settore in fase di onboarding per un confronto più preciso.'}
+        </Text>
+
+        {benchmark ? (
+          <>
+            {/* Benchmark figures */}
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8 }}>
+              <View style={{ alignItems: 'center' }}>
+                <Text style={styles.salaryFigure}>€{benchmark.p25.toLocaleString('it-IT')}</Text>
+                <Text style={styles.salaryLabel}>P25</Text>
+              </View>
+              <View style={{ alignItems: 'center' }}>
+                <Text style={[styles.salaryFigure, { color: Colors.accent.primary }]}>€{benchmark.median.toLocaleString('it-IT')}</Text>
+                <Text style={styles.salaryLabel}>Mediana</Text>
+              </View>
+              <View style={{ alignItems: 'center' }}>
+                <Text style={styles.salaryFigure}>€{benchmark.p75.toLocaleString('it-IT')}</Text>
+                <Text style={styles.salaryLabel}>P75</Text>
+              </View>
+            </View>
+
+            {/* Visual bar */}
+            {barPosition && (
+              <View style={{ marginVertical: 12 }}>
+                <View style={styles.salaryBarTrack}>
+                  {/* P25–P75 filled region */}
+                  <View style={[styles.salaryBarFill, {
+                    left: `${barPosition.p25Pct * 100}%`,
+                    width: `${(barPosition.p75Pct - barPosition.p25Pct) * 100}%`,
+                  }]} />
+                  {/* Median tick */}
+                  <View style={[styles.salaryBarTick, { left: `${barPosition.medianPct * 100}%`, backgroundColor: Colors.accent.primary }]} />
+                  {/* User tick */}
+                  <View style={[styles.salaryBarTick, {
+                    left: `${barPosition.userPct * 100}%`,
+                    backgroundColor: income >= benchmark.median ? Colors.semantic.success : Colors.semantic.warning,
+                    height: 20,
+                    top: -4,
+                  }]} />
+                </View>
+                <Text style={[styles.rowDesc, { textAlign: 'center', marginTop: 6 }]}>
+                  Il tuo stipendio: <Text style={{ color: income >= benchmark.median ? Colors.semantic.success : Colors.semantic.warning, fontWeight: '600' }}>
+                    €{Math.round(income).toLocaleString('it-IT')}
+                  </Text>
+                  {' '}({income >= benchmark.median ? '+' : ''}{Math.round(((income - benchmark.median) / benchmark.median) * 100)}% vs mediana)
+                </Text>
+              </View>
+            )}
+          </>
+        ) : (
+          <Text style={styles.rowDesc}>Dati non disponibili. Riavvia l'app per caricare il database.</Text>
+        )}
+      </View>
+    </View>
+  );
+}
+
 // ── FiscoProfileSection ──────────────────────────────────────────────────────
 
 function FiscoProfileSection() {
@@ -393,6 +500,130 @@ function FiscoProfileSection() {
   );
 }
 
+// ── SecuritySection ──────────────────────────────────────────────────────────
+
+const AUTO_LOCK_LABELS: Record<number, string> = { 0: 'Immediato', 60: '1 min', 300: '5 min', 900: '15 min' };
+
+function SecuritySection() {
+  const {
+    config,
+    biometricSupported,
+    biometricEnrolled,
+    biometricType,
+    updateBiometric,
+    updateAutoLock,
+    disableAuth,
+  } = useAuth();
+
+  const biometricLabel = biometricType === 'face' ? 'Face ID' : 'Touch ID';
+  const canUseBiometric = biometricSupported && biometricEnrolled;
+
+  const handleDisable = () => {
+    Alert.alert(
+      'Disabilita blocco',
+      'Sei sicuro di voler rimuovere la protezione PIN dall\'app?',
+      [
+        { text: 'Annulla', style: 'cancel' },
+        { text: 'Disabilita', style: 'destructive', onPress: () => disableAuth() },
+      ]
+    );
+  };
+
+  const authDescription = () => {
+    const parts = [`PIN ${config.pinLength} cifre`];
+    if (config.biometricEnabled && canUseBiometric) parts.push(biometricLabel);
+    return parts.join(' + ');
+  };
+
+  return (
+    <Section title="SICUREZZA">
+      <View style={styles.row}>
+        <View style={styles.rowInfo}>
+          <Text style={styles.rowLabel}>Blocco app</Text>
+          {config.enabled ? (
+            <Text style={[styles.rowDesc, { color: Colors.semantic.success }]}>
+              {authDescription()}
+            </Text>
+          ) : (
+            <Text style={styles.rowDesc}>Proteggi l'app con PIN e biometria</Text>
+          )}
+        </View>
+        <Switch
+          value={config.enabled}
+          onValueChange={(v) => {
+            if (v) router.push('/pin-setup?mode=setup');
+            else handleDisable();
+          }}
+          trackColor={{ false: Colors.bg.elevated, true: Colors.accent.primary }}
+          thumbColor="#fff"
+        />
+      </View>
+
+      {config.enabled && (
+        <>
+          <View style={styles.separator} />
+          <TouchableOpacity
+            style={styles.row}
+            onPress={() => router.push('/pin-setup?mode=change')}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.rowLabel}>Cambia PIN</Text>
+            <Ionicons name="chevron-forward" size={16} color={Colors.text.muted} />
+          </TouchableOpacity>
+
+          {canUseBiometric && (
+            <>
+              <View style={styles.separator} />
+              <View style={styles.row}>
+                <Text style={styles.rowLabel}>{biometricLabel}</Text>
+                <Switch
+                  value={config.biometricEnabled}
+                  onValueChange={updateBiometric}
+                  trackColor={{ false: Colors.bg.elevated, true: Colors.accent.primary }}
+                  thumbColor="#fff"
+                />
+              </View>
+            </>
+          )}
+
+          <View style={styles.separator} />
+          <View style={styles.row}>
+            <View style={styles.rowInfo}>
+              <Text style={styles.rowLabel}>Auto-blocco</Text>
+              <Text style={styles.rowDesc}>{AUTO_LOCK_LABELS[config.autoLockDelay] ?? '—'}</Text>
+            </View>
+          </View>
+          <View style={[styles.pillRow, { paddingBottom: 14 }]}>
+            {([0, 60, 300, 900] as const).map((v) => (
+              <TouchableOpacity
+                key={v}
+                style={[styles.pill, config.autoLockDelay === v && styles.pillActive]}
+                onPress={() => updateAutoLock(v)}
+                activeOpacity={0.7}
+              >
+                <Text style={[styles.pillText, config.autoLockDelay === v && styles.pillTextActive]}>
+                  {AUTO_LOCK_LABELS[v]}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+
+          <View style={styles.separator} />
+          <TouchableOpacity
+            style={[styles.row, { paddingBottom: 14 }]}
+            onPress={handleDisable}
+            activeOpacity={0.7}
+          >
+            <Text style={[styles.rowLabel, { color: Colors.semantic.danger }]}>
+              Disabilita blocco
+            </Text>
+          </TouchableOpacity>
+        </>
+      )}
+    </Section>
+  );
+}
+
 // ── Main Settings Screen ────────────────────────────────────────────────────
 
 export default function SettingsScreen() {
@@ -428,6 +659,9 @@ export default function SettingsScreen() {
         >
           {/* Profilo fiscale */}
           <FiscoProfileSection />
+
+          {/* Benchmark stipendio */}
+          <SalaryBenchmarkSection />
 
           {/* Conti bancari */}
           <View style={styles.section}>
@@ -545,6 +779,8 @@ export default function SettingsScreen() {
           title="Dati & sicurezza"
           subtitle="Cronologia delle importazioni e informazioni sull'app"
         >
+          <SecuritySection />
+
           <Section title="REGISTRO">
             <TouchableOpacity
               style={styles.resetRow}
@@ -1018,6 +1254,45 @@ const styles = StyleSheet.create({
     color: Colors.text.muted,
   },
 
+  pillRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  pill: {
+    flex: 1,
+    paddingVertical: 8,
+    paddingHorizontal: 4,
+    borderRadius: Radius.md,
+    backgroundColor: Colors.bg.elevated,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: Colors.border.default,
+  },
+  pillActive: {
+    backgroundColor: Colors.accent.primary + '22',
+    borderColor: Colors.accent.primary,
+  },
+  pillText: {
+    ...Typography.caption,
+    color: Colors.text.secondary,
+    fontWeight: '500',
+  },
+  pillTextActive: {
+    color: Colors.accent.primary,
+    fontWeight: '600',
+  },
+  toggleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 10,
+  },
+  toggleLabel: {
+    ...Typography.bodyMedium,
+    color: Colors.text.primary,
+  },
+
   // MacroSection
   macroSection: {
     gap: 16,
@@ -1064,5 +1339,38 @@ const styles = StyleSheet.create({
     paddingHorizontal: 4,
     marginTop: -8,
     lineHeight: 18,
+  },
+
+  // Salary benchmark
+  salaryFigure: {
+    ...Typography.bodyMedium,
+    color: Colors.text.primary,
+    fontWeight: '700',
+  },
+  salaryLabel: {
+    ...Typography.micro,
+    color: Colors.text.muted,
+    marginTop: 2,
+  },
+  salaryBarTrack: {
+    height: 12,
+    backgroundColor: Colors.bg.elevated,
+    borderRadius: 6,
+    position: 'relative',
+    overflow: 'visible',
+  },
+  salaryBarFill: {
+    position: 'absolute',
+    height: '100%',
+    backgroundColor: Colors.accent.glow,
+    borderRadius: 6,
+  },
+  salaryBarTick: {
+    position: 'absolute',
+    width: 3,
+    height: 12,
+    borderRadius: 2,
+    top: 0,
+    marginLeft: -1.5,
   },
 });

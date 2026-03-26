@@ -53,10 +53,11 @@ function QuickActionsRow({ budgets }: { budgets: import('../../types').Budget[] 
   ];
 
   if (budgets.length > 0) {
+    const worst = [...budgets].sort((a, b) => b.spent / b.limit - a.spent / a.limit)[0];
     actions.push({
       icon: 'pie-chart-outline',
       label: 'Budget',
-      onPress: () => router.push(`/budget/${budgets[0].id}` as any),
+      onPress: () => router.push(`/budget/${worst.id}` as any),
     });
   }
 
@@ -232,6 +233,15 @@ function HeroStack({ summary, goals }: { summary: MonthSummary; goals: Goal[] })
         savingsRate={summary.savingsRate}
       />
       <HeroBadge goals={goals} monthSummary={summary} />
+      <TouchableOpacity
+        style={styles.reportBtn}
+        activeOpacity={0.8}
+        onPress={() => router.push('/monthly-report' as any)}
+      >
+        <Ionicons name="bar-chart-outline" size={15} color={Colors.accent.primary} />
+        <Text style={styles.reportBtnText}>Vedi report completo del mese</Text>
+        <Ionicons name="chevron-forward" size={14} color={Colors.text.muted} />
+      </TouchableOpacity>
     </View>
   );
 }
@@ -579,6 +589,23 @@ export default function DashboardScreen() {
 const styles = StyleSheet.create({
   // Hero
   heroStack: { gap: 12 },
+  reportBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    backgroundColor: Colors.accent.primary + '12',
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: Colors.accent.primary + '30',
+  },
+  reportBtnText: {
+    ...Typography.caption,
+    color: Colors.accent.primary,
+    fontWeight: '600',
+    flex: 1,
+  },
   heroBadge: {
     flexDirection: 'row',
     alignItems: 'center',

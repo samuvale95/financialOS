@@ -2,6 +2,7 @@ import type { Transaction, Budget } from '../types';
 import type { InsightProfile } from './insightProfile';
 import type { CategoryId } from '../constants/categories';
 import { CATEGORIES } from '../constants/categories';
+import { getIncomeQuintile } from './budgetCalculator';
 
 export interface SpendingAnomaly {
   type: 'single_large' | 'daily_spike' | 'category_spike' | 'unusual_merchant';
@@ -30,14 +31,29 @@ function fmtDate(isoDate: string): string {
   });
 }
 
+// ── Income-aware threshold helpers ────────────────────────────────────────────
+
+/**
+ * Scale a fallback threshold (€) by income quintile.
+ * Q1 households flag smaller absolute amounts; Q5 households require larger ones.
+ * Multipliers: Q1=0.65, Q2=0.80, Q3=1.00, Q4=1.30, Q5=1.65
+ */
+function incomeScaledFallback(base: number, monthlyIncome: number | undefined): number {
+  if (!monthlyIncome || monthlyIncome <= 0) return base;
+  const q = getIncomeQuintile(monthlyIncome);
+  const SCALE = [0, 0.65, 0.80, 1.00, 1.30, 1.65] as const;
+  return Math.round(base * SCALE[q]);
+}
+
 // ── 1. Single-large ────────────────────────────────────────────────────────────
 
 const SINGLE_LARGE_RATIO = 3;    // must exceed N× the category average monthly
-const SINGLE_LARGE_FALLBACK = 200; // € when no trend history
+const SINGLE_LARGE_FALLBACK = 200; // € when no trend history — scaled by income below
 
 function detectSingleLarge(
   expenses: Transaction[],
   profile: InsightProfile,
+  monthlyIncome?: number,
 ): SpendingAnomaly[] {
   const anomalies: SpendingAnomaly[] = [];
 
@@ -47,10 +63,11 @@ function detectSingleLarge(
     const trend = profile.categoryTrends?.find((t) => t.category === cat);
     const avgMonthly = trend?.averageMonthly ?? 0;
 
-    const threshold = avgMonthly > 0 ? SINGLE_LARGE_RATIO * avgMonthly : SINGLE_LARGE_FALLBACK;
+    const fallback = incomeScaledFallback(SINGLE_LARGE_FALLBACK, monthlyIncome);
+    const threshold = avgMonthly > 0 ? SINGLE_LARGE_RATIO * avgMonthly : fallback;
     if (abs <= threshold) continue;
 
-    const ratio = avgMonthly > 0 ? abs / avgMonthly : abs / SINGLE_LARGE_FALLBACK;
+    const ratio = avgMonthly > 0 ? abs / avgMonthly : abs / (incomeScaledFallback(SINGLE_LARGE_FALLBACK, monthlyIncome) || SINGLE_LARGE_FALLBACK);
 
     let severity: SpendingAnomaly['severity'];
     if (ratio >= 10 || abs >= 1_000) severity = 'high';
@@ -78,11 +95,12 @@ function detectSingleLarge(
 // ── 2. Daily-spike ─────────────────────────────────────────────────────────────
 
 const DAILY_SPIKE_RATIO = 2.5;
-const DAILY_SPIKE_FALLBACK = 150; // € when no snapshot history
+const DAILY_SPIKE_FALLBACK = 150; // € when no snapshot history — scaled by income below
 
 function detectDailySpike(
   expenses: Transaction[],
   profile: InsightProfile,
+  monthlyIncome?: number,
 ): SpendingAnomaly[] {
   // Historical daily average derived from monthly snapshots
   const snapshots = profile.monthlySnapshots ?? [];
@@ -93,8 +111,9 @@ function detectDailySpike(
     historicalDailyAvg = avgMonthlyExp / 30;
   }
 
+  const spikeFallback = incomeScaledFallback(DAILY_SPIKE_FALLBACK, monthlyIncome);
   const threshold =
-    historicalDailyAvg > 0 ? DAILY_SPIKE_RATIO * historicalDailyAvg : DAILY_SPIKE_FALLBACK;
+    historicalDailyAvg > 0 ? DAILY_SPIKE_RATIO * historicalDailyAvg : spikeFallback;
 
   // Aggregate expenses by calendar day
   const byDay = new Map<string, number>();
@@ -109,7 +128,7 @@ function detectDailySpike(
     if (dayTotal <= threshold) continue;
 
     const ratio =
-      historicalDailyAvg > 0 ? dayTotal / historicalDailyAvg : dayTotal / DAILY_SPIKE_FALLBACK;
+      historicalDailyAvg > 0 ? dayTotal / historicalDailyAvg : dayTotal / (spikeFallback || DAILY_SPIKE_FALLBACK);
 
     let severity: SpendingAnomaly['severity'];
     if (ratio >= 5 || dayTotal >= 500) severity = 'high';
@@ -191,17 +210,19 @@ function detectCategorySpike(
  * @param currentMonthTx  All transactions for the month being analysed
  * @param profile         User's InsightProfile (monthlySnapshots + categoryTrends)
  * @param budgets         Current budgets (available for additional context)
+ * @param monthlyIncome   User's monthly income — used to scale fallback thresholds by quintile
  */
 export function detectAnomalies(
   currentMonthTx: Transaction[],
   profile: InsightProfile,
   _budgets: Budget[],
+  monthlyIncome?: number,
 ): SpendingAnomaly[] {
   const expenses = currentMonthTx.filter(isExpense);
 
   const all: SpendingAnomaly[] = [
-    ...detectSingleLarge(expenses, profile),
-    ...detectDailySpike(expenses, profile),
+    ...detectSingleLarge(expenses, profile, monthlyIncome),
+    ...detectDailySpike(expenses, profile, monthlyIncome),
     ...detectCategorySpike(expenses, profile),
   ];
 

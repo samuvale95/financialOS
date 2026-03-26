@@ -14,7 +14,10 @@
     },
     "ios": {
       "supportsTablet": false,
-      "bundleIdentifier": "com.financialos.app"
+      "bundleIdentifier": "com.financialos.app",
+      "infoPlist": {
+        "NSFaceIDUsageDescription": "FinancialOS usa Face ID per sbloccare l'app in modo sicuro."
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -37,7 +40,9 @@
         }
       ],
       "expo-asset",
-      "expo-secure-store"
+      "expo-secure-store",
+      "expo-local-authentication",
+      "expo-sqlite"
     ],
     "scheme": "financialos",
     "experiments": {

@@ -15,68 +15,70 @@
  * Update BASE_RATIOS when ISTAT releases the following year's report.
  */
 
-import type { StoredBudget, OnboardingGoalId, EffortLevel, HousingType, LifestyleProfile } from '../types';
-import { getWeightByCategory } from '../data/istat-coicop-mapping';
-import { getRegionIndex, getHouseholdFactor } from '../data/istat-adjustments';
+import type { StoredBudget, OnboardingGoalId, EffortLevel, HousingType, LifestyleProfile, IncomeStability } from '../types';
+import * as istatCache from './istatCache';
 
 // ─── ISTAT-derived base ratios ────────────────────────────────────────────────
-// Derived from COICOP weights in istat-coicop-mapping.ts.
+// Derived from COICOP weights stored in the ISTAT SQLite database (utils/istatDb.ts).
 // Scale factor ≈ 1.097 converts "% of total spending" → "% of income",
 // assuming tracked categories represent ~74.7% of spending and spending ≈ 82% of income.
 // Values are rounded to 3 d.p. and calibrated for a 2-person household.
-
-const _istatWeights = getWeightByCategory();
+// Hardcoded fallbacks (the ?? values) are the confirmed ISTAT 2024 weights —
+// they activate only if istatCache.initialize() hasn't completed yet.
 
 function _toRatio(pct: number): number {
   // pct is % of total spending; scale to % of income (target ~82% total budget)
   return Math.round((pct / 100) * 1.097 * 1000) / 1000;
 }
 
-const BASE_RATIOS: Record<string, number> = {
-  // COICOP 01 — Alimentari (confirmed 19.3%): groceries 16.4% + food 2.9%
-  groceries:        _toRatio(_istatWeights.groceries ?? 16.4),  // → 0.180
-  food:             _toRatio(_istatWeights.food     ?? 2.9),    // → 0.032
+function _getBaseRatios(): Record<string, number> {
+  const w = istatCache.getWeights();
+  return {
+    // COICOP 01 — Alimentari (confirmed 19.3%): groceries 16.4% + food 2.9%
+    groceries:        _toRatio(w.groceries        ?? 16.4),  // → 0.180
+    food:             _toRatio(w.food             ?? 2.9),   // → 0.032
 
-  // COICOP 11 — Ristoranti e bar (confirmed 5.9%)
-  restaurants:      _toRatio(_istatWeights.restaurants ?? 5.9), // → 0.065
+    // COICOP 11 — Ristoranti e bar (confirmed 5.9%)
+    restaurants:      _toRatio(w.restaurants      ?? 5.9),   // → 0.065
 
-  // COICOP 07 — Trasporti (confirmed 10.8%)
-  fuel:             _toRatio(_istatWeights.fuel             ?? 3.7), // → 0.041
-  public_transport: _toRatio(_istatWeights.public_transport ?? 2.2), // → 0.024
-  transport:        _toRatio(_istatWeights.transport        ?? 4.9), // → 0.054
+    // COICOP 07 — Trasporti (confirmed 10.8%)
+    fuel:             _toRatio(w.fuel             ?? 3.7),   // → 0.041
+    public_transport: _toRatio(w.public_transport ?? 2.2),   // → 0.024
+    transport:        _toRatio(w.transport        ?? 4.9),   // → 0.054
 
-  // COICOP 03 — Abbigliamento + acquisti online
-  shopping:         _toRatio(_istatWeights.shopping ?? 4.0),    // → 0.044
+    // COICOP 03 — Abbigliamento + acquisti online
+    shopping:         _toRatio(w.shopping         ?? 4.0),   // → 0.044
 
-  // COICOP 09 — Ricreazione e sport (confirmed 3.8%)
-  entertainment:    _toRatio(_istatWeights.entertainment ?? 2.3), // → 0.025
-  sports:           _toRatio(_istatWeights.sports       ?? 1.5),  // → 0.016
+    // COICOP 09 — Ricreazione e sport (confirmed 3.8%)
+    entertainment:    _toRatio(w.entertainment    ?? 3.1),   // → 0.034 (DB: 3.1 from new detailed rows)
+    sports:           _toRatio(w.sports           ?? 1.5),   // → 0.016
 
-  // COICOP 06 — Salute
-  health:           _toRatio(_istatWeights.health   ?? 3.1),    // → 0.034
-  pharmacy:         _toRatio(_istatWeights.pharmacy ?? 1.7),    // → 0.019
+    // COICOP 06 — Salute
+    health:           _toRatio(w.health           ?? 3.1),   // → 0.034
+    pharmacy:         _toRatio(w.pharmacy         ?? 1.7),   // → 0.019
 
-  // COICOP 04.3 + 05 — Casa e arredamento
-  home:             _toRatio((_istatWeights.home ?? 5.5)),      // → 0.060
+    // COICOP 04.3 + 05 — Casa e arredamento
+    home:             _toRatio(w.home             ?? 5.5),   // → 0.060
 
-  // COICOP 04.1 — Fitti effettivi (base; overridden by actual cost when known)
-  rent:             _toRatio(_istatWeights.rent ?? 8.5),        // → 0.093
+    // COICOP 04.1 — Fitti effettivi (base; overridden by actual cost when known)
+    rent:             _toRatio(w.rent             ?? 8.5),   // → 0.093
 
-  // COICOP 04.4+04.5 — Utenze (acqua + energia)
-  utilities:        _toRatio((_istatWeights.utilities ?? 4.4)), // → 0.048
+    // COICOP 04.4+04.5 — Utenze (acqua + energia)
+    utilities:        _toRatio(w.utilities        ?? 4.4),   // → 0.048
 
-  // COICOP 12.3 — Assicurazioni
-  insurance:        _toRatio(_istatWeights.insurance ?? 2.5),   // → 0.027
+    // COICOP 12.3 — Assicurazioni
+    insurance:        _toRatio(w.insurance        ?? 2.5),   // → 0.027
 
-  // COICOP 08 — Comunicazioni e abbonamenti digitali
-  subscriptions:    _toRatio(_istatWeights.subscriptions ?? 2.5), // → 0.027
+    // COICOP 08 — Comunicazioni e abbonamenti digitali
+    subscriptions:    _toRatio(w.subscriptions    ?? 2.0),   // → 0.022 (DB: 2.0 from new split rows)
 
-  // COICOP 10 — Istruzione
-  education:        _toRatio(_istatWeights.education ?? 0.9),   // → 0.010
+    // COICOP 10 — Istruzione
+    education:        _toRatio(w.education        ?? 0.9),   // → 0.010
 
-  // COICOP 12.1 — Cura personale
-  beauty:           _toRatio(_istatWeights.beauty ?? 1.8),      // → 0.020
-};
+    // COICOP 12.1 — Cura personale
+    beauty:           _toRatio(w.beauty           ?? 1.8),   // → 0.020
+  };
+}
 
 // ─── Effort-level overrides ───────────────────────────────────────────────────
 // Applied as absolute ratio replacements (not multipliers) to allow
@@ -144,6 +146,22 @@ export interface BudgetContext {
   region?: string | null;
   dependents?: number;
   lifestyleProfile?: LifestyleProfile;
+  incomeStability?: IncomeStability;
+}
+
+// ─── Income quintile helper ───────────────────────────────────────────────────
+
+/**
+ * Maps a monthly income to the corresponding ISTAT income quintile (1–5).
+ * Brackets are derived from the istat_income_quintiles table (2024 data):
+ *   Q1 < €1,200 | Q2 €1,200–1,900 | Q3 €1,900–2,700 | Q4 €2,700–3,800 | Q5 > €3,800
+ */
+export function getIncomeQuintile(monthlyIncome: number): 1 | 2 | 3 | 4 | 5 {
+  if (monthlyIncome < 1200) return 1;
+  if (monthlyIncome < 1900) return 2;
+  if (monthlyIncome < 2700) return 3;
+  if (monthlyIncome < 3800) return 4;
+  return 5;
 }
 
 // ─── ISTAT average budget helper ─────────────────────────────────────────────
@@ -153,7 +171,7 @@ export interface BudgetContext {
  * profile adjustments. Useful as a fallback when onboarding data is missing.
  */
 export function getItalyAverageBudget(monthlyIncome: number): StoredBudget[] {
-  return Object.entries(BASE_RATIOS).map(([category, ratio]) => ({
+  return Object.entries(_getBaseRatios()).map(([category, ratio]) => ({
     id: `b_${category}`,
     category: category as StoredBudget['category'],
     limit: Math.round(monthlyIncome * ratio),
@@ -169,7 +187,7 @@ export function calculateBudgets(
   effortLevel: EffortLevel = 'moderato',
   ctx: BudgetContext = {}
 ): StoredBudget[] {
-  const ratios = { ...BASE_RATIOS };
+  const ratios = { ..._getBaseRatios() };
 
   // 1. Effort-level overrides (replace ISTAT baseline for affected categories)
   for (const [cat, ratio] of Object.entries(EFFORT_RATIOS[effortLevel])) {
@@ -186,7 +204,7 @@ export function calculateBudgets(
   // 3. Household-size adjustment via ISTAT perCapitaIndex
   // BASE_RATIOS are calibrated for 2-person household; householdFactor adjusts up/down.
   const hSize = Math.max(1, ctx.householdSize ?? 2);
-  const householdFactor = getHouseholdFactor(hSize);
+  const householdFactor = istatCache.getHouseholdFactor(hSize);
 
   if (householdFactor !== 1.0) {
     for (const cat of Object.keys(ratios)) {
@@ -245,7 +263,7 @@ export function calculateBudgets(
   // 7. Regional cost-of-living adjustment (ISTAT 2024 macro-area indices)
   // Applied only to cost-sensitive categories; rent/utilities are most affected,
   // but since rent is typically overridden by actual cost, we focus on consumption categories.
-  const regionIndex = getRegionIndex(ctx.region);
+  const regionIndex = istatCache.getRegionIndex(ctx.region);
   if (regionIndex !== 1.0) {
     const REGIONAL_CATS = ['groceries', 'food', 'restaurants', 'utilities',
                            'public_transport', 'entertainment', 'beauty'];
@@ -262,10 +280,49 @@ export function calculateBudgets(
     }
   }
 
-  // 8. Normalise: total tracked spending ≤ 90% of income (leaves ≥10% for savings)
+  // 7.5. Income quintile: scale discretionary categories up/down based on ISTAT spending index
+  // Applied only on 'moderato' effort — explicit effort overrides take full priority.
+  // Discretionary categories (restaurants, shopping, entertainment, sports, beauty, travel)
+  // scale at 60% of the quintile delta; semi-discretionary (food, subscriptions) at 30%.
+  // Necessity categories (rent, utilities, groceries, health, insurance) are not touched —
+  // they don't scale proportionally with income.
+  const quintile = getIncomeQuintile(income);
+  const quintileIdx = istatCache.getIncomeQuintileIndex(quintile);
+  if (quintileIdx !== 1.0 && effortLevel === 'moderato') {
+    const DISC_Q = new Set(['restaurants', 'shopping', 'entertainment', 'sports', 'beauty', 'travel']);
+    const SEMI_Q = new Set(['food', 'subscriptions']);
+    const discDelta = (quintileIdx - 1.0) * 0.60;
+    const semiDelta = (quintileIdx - 1.0) * 0.30;
+    for (const cat of Object.keys(ratios)) {
+      if (DISC_Q.has(cat))  ratios[cat] *= 1.0 + discDelta;
+      else if (SEMI_Q.has(cat)) ratios[cat] *= 1.0 + semiDelta;
+    }
+  }
+
+  // 7.6. Income stability tightening: variable/seasonal earners get stricter discretionary caps
+  // to build a larger implicit buffer (the freed budget envelope becomes available savings).
+  const stability = ctx.incomeStability;
+  if (stability === 'variable' || stability === 'seasonal') {
+    const tightenFactor = stability === 'seasonal' ? 0.82 : 0.88;
+    const DISC_STAB = ['restaurants', 'shopping', 'entertainment', 'sports', 'beauty', 'travel', 'subscriptions'];
+    for (const cat of DISC_STAB) {
+      if (ratios[cat] !== undefined) ratios[cat] *= tightenFactor;
+    }
+  }
+
+  // 8. Normalise: total tracked spending ≤ (1 − savingsFloor).
+  // The savings floor is calibrated by quintile: Q1 can't realistically save 10%;
+  // Q4–Q5 should target higher savings rates.
+  const savingsFloor =
+    quintile <= 1 ? 0.05 :
+    quintile === 2 ? 0.07 :
+    quintile === 3 ? 0.10 :
+    quintile === 4 ? 0.12 : 0.15;
+
   const total = Object.values(ratios).reduce((s, v) => s + v, 0);
-  if (total > 0.90) {
-    const scale = 0.90 / total;
+  const ceiling = 1.0 - savingsFloor;
+  if (total > ceiling) {
+    const scale = ceiling / total;
     for (const cat of Object.keys(ratios)) ratios[cat] *= scale;
   }
 
