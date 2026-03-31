@@ -6,10 +6,10 @@ import { Colors, Typography, Radius } from '../../constants/theme';
 import type { Asset } from '../../types';
 
 function formatCurrency(value: number): string {
-  if (value >= 1000) {
+  if (Math.abs(value) >= 1000) {
     return `€${(value / 1000).toFixed(1)}k`;
   }
-  return `€${value.toFixed(2)}`;
+  return `€${Math.abs(value).toFixed(0)}`;
 }
 
 interface SparklineProps {
@@ -19,7 +19,8 @@ interface SparklineProps {
   height?: number;
 }
 
-function Sparkline({ data, color, width = 60, height = 28 }: SparklineProps) {
+function Sparkline({ data, color, width = 56, height = 26 }: SparklineProps) {
+  if (data.length < 2) return null;
   const min = Math.min(...data);
   const max = Math.max(...data);
   const range = max - min || 1;
@@ -27,7 +28,7 @@ function Sparkline({ data, color, width = 60, height = 28 }: SparklineProps) {
   const points = data
     .map((v, i) => {
       const x = (i / (data.length - 1)) * width;
-      const y = height - ((v - min) / range) * height;
+      const y = height - ((v - min) / range) * (height - 2) - 1;
       return `${x},${y}`;
     })
     .join(' ');
@@ -48,14 +49,17 @@ function Sparkline({ data, color, width = 60, height = 28 }: SparklineProps) {
 
 interface AssetItemProps {
   asset: Asset;
+  totalValue?: number; // portfolio total for allocation %
   onPress?: () => void;
 }
 
-export function AssetItem({ asset, onPress }: AssetItemProps) {
+export function AssetItem({ asset, totalValue, onPress }: AssetItemProps) {
   const currentValue = asset.quantity * asset.currentPrice;
   const costBasis = asset.quantity * asset.purchasePrice;
-  const returnPct = ((currentValue - costBasis) / costBasis) * 100;
-  const isPositive = returnPct >= 0;
+  const pnl = currentValue - costBasis;
+  const returnPct = costBasis > 0 ? (pnl / costBasis) * 100 : 0;
+  const isPositive = pnl >= 0;
+  const allocationPct = totalValue && totalValue > 0 ? (currentValue / totalValue) * 100 : null;
 
   const typeLabels: Record<Asset['type'], string> = {
     etf: 'ETF',
@@ -65,10 +69,14 @@ export function AssetItem({ asset, onPress }: AssetItemProps) {
     cash: 'Liquidità',
   };
 
+  const pnlColor = isPositive ? Colors.semantic.success : Colors.semantic.danger;
+  const pnlSign = isPositive ? '+' : '-';
+
   return (
     <TouchableOpacity onPress={onPress} activeOpacity={0.7} style={styles.container}>
       <View style={[styles.colorBar, { backgroundColor: asset.color }]} />
 
+      {/* Name + meta */}
       <View style={styles.info}>
         <View style={styles.topRow}>
           <Text style={styles.ticker}>{asset.ticker}</Text>
@@ -78,30 +86,35 @@ export function AssetItem({ asset, onPress }: AssetItemProps) {
             </Text>
           </View>
         </View>
-        <Text style={styles.name} numberOfLines={1}>
-          {asset.name}
-        </Text>
+        <View style={styles.bottomRow}>
+          <Text style={styles.name} numberOfLines={1}>
+            {asset.name}
+          </Text>
+          {allocationPct !== null && (
+            <Text style={styles.allocPct}>{allocationPct.toFixed(1)}%</Text>
+          )}
+        </View>
       </View>
 
+      {/* Sparkline */}
       <View style={styles.sparkContainer}>
-        <Sparkline data={asset.sparkline} color={isPositive ? '#00D68F' : '#FF6B6B'} />
+        <Sparkline data={asset.sparkline} color={isPositive ? Colors.semantic.success : Colors.semantic.danger} />
       </View>
 
+      {/* Value + P&L */}
       <View style={styles.valueBlock}>
         <Text style={styles.value}>{formatCurrency(currentValue)}</Text>
-        <View style={styles.returnRow}>
+        <View style={styles.pnlRow}>
           <Ionicons
             name={isPositive ? 'caret-up' : 'caret-down'}
-            size={10}
-            color={isPositive ? Colors.semantic.success : Colors.semantic.danger}
+            size={9}
+            color={pnlColor}
           />
-          <Text
-            style={[
-              styles.returnPct,
-              { color: isPositive ? Colors.semantic.success : Colors.semantic.danger },
-            ]}
-          >
+          <Text style={[styles.pnlPct, { color: pnlColor }]}>
             {Math.abs(returnPct).toFixed(1)}%
+          </Text>
+          <Text style={[styles.pnlAbs, { color: pnlColor }]}>
+            {pnlSign}{formatCurrency(Math.abs(pnl))}
           </Text>
         </View>
       </View>
@@ -113,9 +126,9 @@ const styles = StyleSheet.create({
   container: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 14,
+    paddingVertical: 12,
     paddingHorizontal: 16,
-    gap: 12,
+    gap: 10,
   },
   colorBar: {
     width: 3,
@@ -129,7 +142,12 @@ const styles = StyleSheet.create({
   topRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 7,
+  },
+  bottomRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
   },
   ticker: {
     ...Typography.bodyMedium,
@@ -148,6 +166,16 @@ const styles = StyleSheet.create({
   name: {
     ...Typography.caption,
     color: Colors.text.muted,
+    flex: 1,
+  },
+  allocPct: {
+    ...Typography.micro,
+    color: Colors.text.secondary,
+    fontWeight: '600',
+    backgroundColor: Colors.bg.secondary,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 4,
   },
   sparkContainer: {
     justifyContent: 'center',
@@ -161,13 +189,18 @@ const styles = StyleSheet.create({
     color: Colors.text.primary,
     fontWeight: '600',
   },
-  returnRow: {
+  pnlRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 2,
   },
-  returnPct: {
+  pnlPct: {
     ...Typography.caption,
     fontWeight: '600',
+  },
+  pnlAbs: {
+    ...Typography.micro,
+    fontWeight: '500',
+    marginLeft: 2,
   },
 });
